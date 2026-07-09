@@ -116,8 +116,11 @@ def run_backtest(
             edge = detect_fn(visible, eval_ts)
             if edge is not None:
                 liquidity = _liquidity_at(visible)
-                fill_price, _ = compute_fill_price(
-                    edge.side, edge.market_price, notional_usd, liquidity
+                # `compute_fill_price` trabaja en Decimal porque es el camino del
+                # dinero real. Aquí es estadística: las métricas viven en float y
+                # numpy. La frontera se cruza una vez, explícitamente.
+                fill_price = float(
+                    compute_fill_price(edge.side, edge.market_price, notional_usd, liquidity)[0]
                 )
                 shares = notional_usd / fill_price if fill_price > 0 else 0.0
                 won = _won(edge.side, outcome_yes)

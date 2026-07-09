@@ -304,16 +304,41 @@ Aquí se cierra el agujero del halt que no sobrevive a un restart.
 - Queda: deduplicar el resto del `CONFIG` divergente (`setupBinanceAnalysis`; `bot-config.ts`
   ignora los flags `*_ENABLED` del `.env`, y direct trading ejecuta en uno y solo loguea en el
   otro, `bot-config.ts:801`).
-- Queda: `float → Decimal` en el camino del dinero de `brain` (`execution/paper.py`, `orchestrator.py`).
-- Queda: el risk engine de `brain` no tiene test unitario por-compuerta. Se escriben los 11.
-  Es lo más crítico del sistema y es lo menos cubierto.
+- **[hecho]** `float → Decimal` en el camino del dinero de `brain`. Se calculaba todo en
+  float y se envolvía en `Decimal(str(x))` justo al guardar: aritmética binaria con un
+  disfraz al final. Dos daños concretos, no estéticos:
+
+  `cost_basis_released` se calculaba **dos veces** —una en `execute_close`, otra dentro
+  de `_apply_close`— y solo la segunda respetaba el clamp de shares. `trade_outcomes`
+  dividía el PnL realizado de una entre el cost basis de la otra: `return_pct` mentía.
+
+  `proceeds` entraba a Postgres sin cuantizar y la base lo redondeaba a 6 decimales,
+  mientras el PnL realizado se derivaba del valor sin redondear. Medido: la posición
+  acumulaba `44.928853100793` donde el fill guardaba `44.928853`. La identidad
+  `realized = notional - fees - cost_basis` no cerraba fila a fila, y sin ella no se
+  puede reconstruir la contabilidad desde `fills_paper`.
+
+  Ahora todo se cuantiza a la escala de su columna antes de que nada se derive de él, y
+  el redondeo es adverso donde hay dirección segura: shares hacia abajo, fees hacia
+  arriba, proceeds hacia abajo. El backtest no puede halagarse con el sexto decimal.
+- **[hecho]** Los 11 gates de `brain`, en `tests/test_risk_engine.py` (33 tests).
+  Los umbrales van clavados en un fixture: el suite no puede depender del `.env` del operador.
 
 *Aceptación:* matar el proceso de `exec` a mitad de sesión y comprobar que al reiniciar conserva
 `peak_capital`, `daily_pnl` y el estado de halt. Un test que lo demuestre. Los 11 gates cubiertos.
 
-*Estado:* la mitad de `exec` está cerrada y verificada — `src/risk/risk.test.ts` cubre las cuatro
-capas, y el criterio se comprobó además contra Redis real, matando el proceso con `SIGKILL` y
-reiniciando también el propio Redis. Faltan los 11 gates de `brain` y el `Decimal`.
+*Estado:* **cumplida.** `exec/src/risk/risk.test.ts` cubre las cuatro capas y el restart; el
+criterio se comprobó además fuera de los tests, contra Redis real, matando el proceso con
+`SIGKILL` y reiniciando también el propio Redis. Los 11 gates de `brain` están en
+`tests/test_risk_engine.py`. 141 tests en `brain`, 91 en `exec`.
+
+Solo queda abierto un punto menor de la lista: la deduplicación del `CONFIG` divergente entre
+los dos entrypoints (`setupBinanceAnalysis` y los flags `*_ENABLED`). No bloquea la Fase 3:
+`canTrade()`, `recordTrade()` y el estado de riesgo —lo que tocaba dinero— ya están unificados.
+
+Se encontró y cerró, de paso, una trampa que no estaba en el plan: `alembic/env.py` ignoraba
+`UMBRA_TEST_DATABASE_URL`, así que la receta de migración documentada en `docker-compose.yml`
+apuntaba a la base de **producción**.
 
 ### Fase 3 — Shadow execution (semana 2-3)
 

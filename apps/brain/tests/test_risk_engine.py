@@ -30,12 +30,12 @@ EDGE = 0.05  # > min_edge (0.02)
 
 def _book(**over):
     """Un book fresco, líquido y estrecho. Pasa la compuerta 6 sin discusión."""
-    base = dict(
-        ts=datetime.now(UTC),
-        spread=0.01,
-        liquidity_num=10_000.0,
-        volume_24hr=50_000.0,
-    )
+    base = {
+        "ts": datetime.now(UTC),
+        "spread": 0.01,
+        "liquidity_num": 10_000.0,
+        "volume_24hr": 50_000.0,
+    }
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -114,14 +114,14 @@ def world(monkeypatch):
 
 
 async def _check(**over):
-    kwargs = dict(
-        session=None,
-        condition_id=MARKET,
-        edge_value=EDGE,
-        sizing=SIZING,
-        side="BUY_YES",
-        confidence=0.9,
-    )
+    kwargs = {
+        "session": None,
+        "condition_id": MARKET,
+        "edge_value": EDGE,
+        "sizing": SIZING,
+        "side": "BUY_YES",
+        "confidence": 0.9,
+    }
     kwargs.update(over)
     return await engine.check(**kwargs)
 

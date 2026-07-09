@@ -6,7 +6,7 @@ Llamado por el poller después de cada snapshot.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,8 +28,32 @@ log = get_logger("umbra.orchestrator")
 SIGNAL_STREAM_KEY = "umbra:signals"
 
 
-def _dec(x: float) -> Decimal:
-    return Decimal(str(x))
+# Las escalas de las columnas de `signals` en db/models.py. Cuantizar aquí, y no
+# dejar que Postgres redondee al insertar, importa: `execution/paper.py` lee
+# `signal.notional_usd` del objeto EN MEMORIA, antes de que la base haya redondeado
+# nada. Sin esto, las shares de un fill se derivan de un nocional que no es el que
+# quedó guardado.
+_PRICE = Decimal("0.000001")  # Numeric(12, 6)
+_MONEY = Decimal("0.000001")  # Numeric(20, 6)
+_SHARES = Decimal("0.000001")  # Numeric(20, 6)
+
+
+def _dec(x: float | Decimal) -> Decimal:
+    """Frontera float → Decimal. Vía `str`: `Decimal(0.1)` no es `Decimal("0.1")`."""
+    return x if isinstance(x, Decimal) else Decimal(str(x))
+
+
+def _price(x: float | Decimal | None) -> Decimal | None:
+    return None if x is None else _dec(x).quantize(_PRICE, rounding=ROUND_HALF_UP)
+
+
+def _money(x: float | Decimal) -> Decimal:
+    return _dec(x).quantize(_MONEY, rounding=ROUND_HALF_UP)
+
+
+def _shares(x: float | Decimal) -> Decimal:
+    """Hacia abajo: nunca se acreditan más shares de las que el dinero compró."""
+    return _dec(x).quantize(_SHARES, rounding=ROUND_DOWN)
 
 
 async def _emit_to_stream(signal_dict: dict) -> None:
@@ -70,10 +94,10 @@ async def evaluate_market(
             market_id=condition_id,
             edge_name=edge.edge_name,
             side=edge.side,
-            market_price=_dec(edge.market_price),
-            fair_price=_dec(edge.fair_price),
-            edge_value=_dec(edge.edge_value),
-            strength=_dec(edge.strength),
+            market_price=_price(edge.market_price),
+            fair_price=_price(edge.fair_price),
+            edge_value=_price(edge.edge_value),
+            strength=_price(edge.strength),
             size_shares=None,
             notional_usd=None,
             accepted=False,
@@ -112,12 +136,12 @@ async def evaluate_market(
         market_id=condition_id,
         edge_name=edge.edge_name,
         side=edge.side,
-        market_price=_dec(edge.market_price),
-        fair_price=_dec(edge.fair_price),
-        edge_value=_dec(edge.edge_value),
-        strength=_dec(edge.strength),
-        size_shares=_dec(decision.adjusted_shares) if decision.accepted else None,
-        notional_usd=_dec(decision.adjusted_notional_usd) if decision.accepted else None,
+        market_price=_price(edge.market_price),
+        fair_price=_price(edge.fair_price),
+        edge_value=_price(edge.edge_value),
+        strength=_price(edge.strength),
+        size_shares=_shares(decision.adjusted_shares) if decision.accepted else None,
+        notional_usd=_money(decision.adjusted_notional_usd) if decision.accepted else None,
         accepted=decision.accepted,
         reason=decision.reason,
         mode=settings.mode,

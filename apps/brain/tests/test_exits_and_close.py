@@ -152,7 +152,9 @@ async def test_execute_close_produces_realized_pnl_and_closes_position():
         assert outcome.exit_reason == "manual_test"
         assert outcome.winning_trade is True
         assert outcome.losing_trade is False
-        assert float(outcome.realized_pnl_usd) == pytest.approx(res.realized_pnl_usd)
+        # `FillResult` viaja en Decimal; `trade_outcomes` guarda Numeric(20,6).
+        # La igualdad es exacta, no aproximada: es la misma cifra, no dos cálculos.
+        assert outcome.realized_pnl_usd == res.realized_pnl_usd
         assert outcome.return_pct is not None
 
         await _cleanup(session, cid)
@@ -577,4 +579,144 @@ async def test_flat_portfolio_resets_drawdown_cycle_after_old_peak():
             delete(EquitySnapshot).where(EquitySnapshot.id.in_([old_peak.id, snap.id]))
         )
         await session.commit()
+        await _cleanup(session, cid)
+
+
+@pytest.mark.asyncio
+async def test_close_fill_reconciles_exactly_from_its_own_row():
+    """`realized = notional - fees - cost_basis`, exacto, en el fill guardado.
+
+    Antes no cerraba: `proceeds` se calculaba en float, entraba sin cuantizar, y
+    Postgres lo redondeaba a 6 decimales — mientras el PnL realizado se derivaba
+    del valor sin redondear. La diferencia era del orden de 1e-7 por fill, y hacía
+    imposible reconstruir la contabilidad desde `fills_paper`.
+
+    Se elige un `avg_entry_price` con muchos decimales a propósito: 0.333333 * 3
+    shares no es representable en binario.
+    """
+    cid = _cid("recon")
+    sm = get_sessionmaker()
+    async with sm() as session:
+        await _cleanup(session, cid)
+        await _seed_market(session, cid)
+        session.add(
+            PaperPosition(
+                market_id=cid,
+                side="BUY_YES",
+                shares=Decimal("333.333333"),
+                avg_entry_price=Decimal("0.333333"),
+                total_cost_usd=Decimal("111.111"),
+                total_fees_usd=Decimal("0"),
+                realized_pnl_usd=Decimal("0"),
+                peak_unrealized_pnl_usd=Decimal("0"),
+                n_fills=1,
+                status="open",
+            )
+        )
+        await session.commit()
+
+        pos = (
+            await session.execute(
+                select(PaperPosition).where(PaperPosition.market_id == cid)
+            )
+        ).scalar_one()
+
+        res = await execute_close(
+            session=session,
+            position=pos,
+            current_mid_yes=0.7,
+            liquidity_usd=1234.56,
+            fraction=0.37,  # cierre parcial, ratio feo a propósito
+            reason="recon_test",
+        )
+        await session.commit()
+        assert res is not None
+
+        # Releído de Postgres: los valores que la base guardó de verdad, no los
+        # que teníamos en memoria.
+        fill = (
+            await session.execute(
+                select(PaperFill).where(
+                    PaperFill.market_id == cid, PaperFill.action == "CLOSE"
+                )
+            )
+        ).scalar_one()
+
+        # El cost basis se cuantiza a la escala de la columna antes de derivar nada
+        # de él, así que la identidad se comprueba contra ese mismo valor.
+        cost_basis = ((-fill.shares) * Decimal("0.333333")).quantize(Decimal("0.000001"))
+        assert fill.realized_pnl_usd == fill.notional_usd - fill.fees_usd - cost_basis
+
+        # Y `trade_outcomes` derivó su `return_pct` del MISMO cost basis. Antes había
+        # dos: `execute_close` calculaba uno sin respetar el clamp de shares y
+        # `_apply_close` otro con el clamp aplicado. El `return_pct` guardado salía
+        # de dividir el PnL de uno entre el cost basis del otro.
+        outcome = (
+            await session.execute(select(TradeOutcome).where(TradeOutcome.market_id == cid))
+        ).scalar_one()
+        assert outcome.realized_pnl_usd == fill.realized_pnl_usd
+        expected_ret = (fill.realized_pnl_usd / cost_basis).quantize(Decimal("0.000001"))
+        assert outcome.return_pct == expected_ret
+
+        # Y la posición sigue cuadrando: shares cerradas + shares vivas = las de antes.
+        pos2 = (
+            await session.execute(
+                select(PaperPosition).where(PaperPosition.market_id == cid)
+            )
+        ).scalar_one()
+        assert pos2.status == "open"
+        assert pos2.shares + (-fill.shares) == Decimal("333.333333")
+        assert pos2.realized_pnl_usd == fill.realized_pnl_usd
+
+        await _cleanup(session, cid)
+
+
+@pytest.mark.asyncio
+async def test_full_close_leaves_no_dust_in_shares_or_cost():
+    """Un cierre total deja la posición exactamente en cero, no en 1e-7."""
+    cid = _cid("dust")
+    sm = get_sessionmaker()
+    async with sm() as session:
+        await _cleanup(session, cid)
+        await _seed_market(session, cid)
+        session.add(
+            PaperPosition(
+                market_id=cid,
+                side="BUY_NO",
+                shares=Decimal("77.777777"),
+                avg_entry_price=Decimal("0.123457"),
+                total_cost_usd=Decimal("9.602182"),
+                total_fees_usd=Decimal("0"),
+                realized_pnl_usd=Decimal("0"),
+                peak_unrealized_pnl_usd=Decimal("0"),
+                n_fills=1,
+                status="open",
+            )
+        )
+        await session.commit()
+        pos = (
+            await session.execute(
+                select(PaperPosition).where(PaperPosition.market_id == cid)
+            )
+        ).scalar_one()
+
+        await execute_close(
+            session=session,
+            position=pos,
+            current_mid_yes=0.9,
+            liquidity_usd=5_000.0,
+            fraction=1.0,
+            reason="dust_test",
+        )
+        await session.commit()
+
+        pos2 = (
+            await session.execute(
+                select(PaperPosition).where(PaperPosition.market_id == cid)
+            )
+        ).scalar_one()
+        assert pos2.status == "closed"
+        assert pos2.shares == Decimal("0")
+        assert pos2.total_cost_usd == Decimal("0")
+
         await _cleanup(session, cid)
