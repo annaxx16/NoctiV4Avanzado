@@ -21,6 +21,13 @@ dueño de la contabilidad y le pasa por `nocti:universe` lo único que exec nece
 saber: qué mercados vigilar, sus `token_ids`, y la liquidez/volumen que da Gamma y el
 WebSocket no. Menos superficie, y los secretos de la base de datos en un solo sitio.
 
+**`yes_token_id` viene resuelto, no se adivina.** Gamma reporta `bestBid`/`bestAsk` a
+nivel de mercado refiriéndose al lado YES, y todo brain lo asume. Deducirlo de
+`token_ids[0]` funciona casi siempre; cuando no, exec publicaría el libro del NO como
+si fuera el del mercado y brain vería **todos los precios invertidos**, sin que nada
+fallara. brain conoce `outcomes` y lo resuelve; exec no adivina. Si no hay un YES
+identificable, ese mercado no se vigila: mejor un hueco que un precio invertido.
+
 El TTL de `nocti:universe` es deliberado. Si brain muere, el universo caduca, exec se
 desuscribe y deja de publicar; los books caducan a los 60s; cuando brain vuelve, su
 poller no encuentra nada fresco y cae a Gamma por su cuenta. El sistema degrada solo.

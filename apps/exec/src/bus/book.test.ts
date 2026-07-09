@@ -17,6 +17,7 @@ const market: UniverseMarket = {
   condition_id: CID,
   rank: 1,
   token_ids: ['tok_yes', 'tok_no'],
+  yes_token_id: 'tok_yes',
   liquidity_num: 12_000,
   volume_24hr: 55_000,
 };
@@ -158,12 +159,19 @@ describe('buildCachedBook', () => {
 });
 
 describe('universo', () => {
-  it('el token de YES es el primero: es el lado que reporta Gamma y asume brain', () => {
-    expect(yesTokenId(market)).toBe('tok_yes');
+  it('usa el token de YES que brain resolvió, no la posición en el array', () => {
+    // Si Gamma invierte `outcomes`, token_ids[0] es el NO. Fiarse de la posición
+    // publicaría el libro equivocado y brain vería los precios invertidos.
+    const invertido: UniverseMarket = {
+      ...market,
+      token_ids: ['tok_no', 'tok_yes'],
+      yes_token_id: 'tok_yes',
+    };
+    expect(yesTokenId(invertido)).toBe('tok_yes');
   });
 
-  it('un mercado sin tokens no se puede vigilar', () => {
-    expect(yesTokenId({ ...market, token_ids: [] })).toBeNull();
+  it('un mercado sin YES identificable no se vigila', () => {
+    expect(yesTokenId({ ...market, yes_token_id: null })).toBeNull();
   });
 
   it('decodifica tolerando campos que exec no conoce', () => {

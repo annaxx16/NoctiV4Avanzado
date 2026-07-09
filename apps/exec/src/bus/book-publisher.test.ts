@@ -12,6 +12,7 @@ const marketA: UniverseMarket = {
   condition_id: CID_A,
   rank: 1,
   token_ids: ['tok_a_yes', 'tok_a_no'],
+  yes_token_id: 'tok_a_yes',
   liquidity_num: 1000,
   volume_24hr: 2000,
 };
@@ -19,6 +20,7 @@ const marketB: UniverseMarket = {
   condition_id: CID_B,
   rank: 2,
   token_ids: ['tok_b_yes', 'tok_b_no'],
+  yes_token_id: 'tok_b_yes',
   liquidity_num: 3000,
   volume_24hr: 4000,
 };
@@ -130,6 +132,12 @@ describe('BookPublisher — universo', () => {
     publishUniverse(ctx.redis, [marketA, marketB]);
     await ctx.pub.refreshUniverse();
     expect(ctx.realtime.state.tokens).toEqual(['tok_a_yes', 'tok_b_yes']);
+  });
+
+  it('salta los mercados sin YES identificable en vez de adivinar', async () => {
+    publishUniverse(ctx.redis, [{ ...marketA, yes_token_id: null }, marketB]);
+    await ctx.pub.refreshUniverse();
+    expect(ctx.realtime.state.tokens).toEqual(['tok_b_yes']);
   });
 
   it('no re-suscribe si el universo no cambió', async () => {

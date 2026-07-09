@@ -24,6 +24,19 @@ from umbra.polymarket.schemas import GammaMarket
 log = get_logger("umbra.universe")
 
 
+def yes_token_id(m: GammaMarket) -> str | None:
+    """El token del outcome YES, emparejando `outcomes` con `clob_token_ids`.
+
+    Devuelve None si no hay un YES identificable: es preferible que exec no
+    publique ese mercado a que publique el libro del lado equivocado.
+    """
+    tokens = m.clob_token_ids or []
+    for outcome, token in zip(m.outcomes or [], tokens, strict=False):
+        if outcome.strip().lower() == "yes":
+            return token
+    return None
+
+
 def to_universe_markets(candidates: list[GammaMarket]) -> list[UniverseMarket]:
     """Traduce los candidatos a la forma que exec entiende.
 
@@ -35,6 +48,7 @@ def to_universe_markets(candidates: list[GammaMarket]) -> list[UniverseMarket]:
             condition_id=m.condition_id,
             rank=rank,
             token_ids=list(m.clob_token_ids or []),
+            yes_token_id=yes_token_id(m),
             liquidity_num=m.liquidity_num,
             volume_24hr=m.volume_24hr,
         )

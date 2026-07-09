@@ -31,6 +31,15 @@ class UniverseMarket:
     # Los token IDs del CTF, en el orden de `outcomes`. exec se suscribe al
     # WebSocket por token_id, no por condition_id.
     token_ids: list[str]
+    # El token del outcome YES, explícito.
+    #
+    # Gamma reporta `bestBid`/`bestAsk` a nivel de mercado refiriéndose al lado
+    # YES, y todo brain lo asume. Dar por hecho que es `token_ids[0]` funciona
+    # casi siempre, y cuando no, exec publicaría el libro del NO como si fuera el
+    # del mercado: brain vería todos los precios invertidos y nada fallaría.
+    # Un bug silencioso que cuesta dinero. Se resuelve aquí, donde conocemos
+    # `outcomes`, y no allí, donde no.
+    yes_token_id: str | None
     # Vienen de Gamma. El WebSocket no los da, así que viajan aquí para que exec
     # pueda componer el book completo sin llamar a Gamma.
     liquidity_num: float | None

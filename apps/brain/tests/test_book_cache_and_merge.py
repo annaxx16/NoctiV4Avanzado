@@ -22,7 +22,7 @@ from umbra.cache.book_cache import (
 from umbra.cache.universe_cache import Universe, decode_universe
 from umbra.polymarket.schemas import GammaMarket
 from umbra.scheduler.poller import build_snapshot, is_usable_ws_book
-from umbra.universe.scanner import to_universe_markets
+from umbra.universe.scanner import to_universe_markets, yes_token_id
 
 CID = "0x" + "ab" * 32
 NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=UTC)
@@ -44,6 +44,7 @@ def _gamma(**over) -> GammaMarket:
         "liquidityNum": 12_000.0,
         "volume24hr": 55_000.0,
         "clobTokenIds": ["tok_yes", "tok_no"],
+        "outcomes": ["Yes", "No"],
     }
     base.update(over)
     return GammaMarket(**base)
@@ -204,6 +205,33 @@ def test_el_universo_lleva_los_token_ids_que_exec_necesita():
     assert markets[0].rank == 1
 
 
+def test_el_token_yes_se_resuelve_contra_outcomes_no_por_posicion():
+    """Si Gamma invierte el orden, `token_ids[0]` sería el NO.
+
+    exec publicaría el libro del NO como si fuera el del mercado y brain vería
+    todos los precios invertidos, en silencio. Se resuelve aquí, donde conocemos
+    `outcomes`.
+    """
+    invertido = _gamma(outcomes=["No", "Yes"], clobTokenIds=["tok_no", "tok_yes"])
+    assert yes_token_id(invertido) == "tok_yes"
+    assert to_universe_markets([invertido])[0].yes_token_id == "tok_yes"
+
+
+def test_el_token_yes_no_distingue_mayusculas():
+    assert yes_token_id(_gamma(outcomes=["YES", "NO"])) == "tok_yes"
+
+
+def test_sin_outcome_yes_no_hay_token_y_exec_no_vigila_el_mercado():
+    """Mejor un hueco que un precio invertido."""
+    binario_raro = _gamma(outcomes=["Trump", "Biden"])
+    assert yes_token_id(binario_raro) is None
+    assert to_universe_markets([binario_raro])[0].yes_token_id is None
+
+
+def test_mas_outcomes_que_tokens_no_revienta():
+    assert yes_token_id(_gamma(outcomes=["No", "Yes", "Maybe"], clobTokenIds=["tok_no"])) is None
+
+
 def test_el_universo_lleva_liquidez_y_volumen_para_que_exec_no_llame_a_gamma():
     markets = to_universe_markets([_gamma()])
     assert markets[0].liquidity_num == 12_000.0
@@ -233,6 +261,7 @@ def test_universo_con_campos_desconocidos_no_tira_a_exec():
                     "condition_id": CID,
                     "rank": 1,
                     "token_ids": ["a", "b"],
+                    "yes_token_id": "a",
                     "liquidity_num": 1.0,
                     "volume_24hr": 2.0,
                     "campo_del_futuro": "x",

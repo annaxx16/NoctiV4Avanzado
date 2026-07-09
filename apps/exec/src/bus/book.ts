@@ -26,8 +26,16 @@ export type Level = [price: string, size: string];
 export interface UniverseMarket {
   condition_id: string;
   rank: number;
-  /** Token IDs del CTF en el orden de `outcomes`. El [0] es YES. */
+  /** Token IDs del CTF, en el orden de `outcomes`. */
   token_ids: string[];
+  /**
+   * El token del outcome YES, resuelto por brain contra `outcomes`.
+   *
+   * Null si no hay un YES identificable. No lo adivinamos: publicar el libro del
+   * NO como si fuera el del mercado invertiría todos los precios que ve brain,
+   * en silencio y sin que nada fallara.
+   */
+  yes_token_id: string | null;
   liquidity_num: number | null;
   volume_24hr: number | null;
 }
@@ -63,9 +71,15 @@ export function decodeUniverse(raw: string): Universe {
   return data;
 }
 
-/** El token de YES. Gamma reporta bestBid/bestAsk del lado YES, y brain lo asume. */
+/**
+ * El token de YES, que es el lado que Gamma reporta a nivel de mercado y el que
+ * brain asume en todo su pipeline.
+ *
+ * Lo resuelve brain, que conoce `outcomes`. Si no viene, este mercado no se
+ * vigila: mejor un hueco que un precio invertido.
+ */
 export function yesTokenId(market: UniverseMarket): string | null {
-  return market.token_ids?.[0] ?? null;
+  return market.yes_token_id ?? null;
 }
 
 /**
