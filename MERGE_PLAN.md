@@ -254,10 +254,26 @@ y `skippedCrossed` se mantiene marginal frente a `published`.
 
 ### Fase 2 — Contabilidad unificada (semana 1-2)
 
-Aquí se cierra el agujero que hoy está abierto en producción.
+**Contradicción pendiente de resolver.** Este plan decía "migrar el estado de riesgo de
+`exec` a Postgres". Luego la Fase 1 estableció que **`exec` no habla con Postgres**. Las dos
+cosas no pueden ser verdad. Tres salidas:
 
-- Migrar el `state` en memoria de Bot1 a la tabla `risk_state`. El halt permanente pasa a
-  sobrevivir a restarts.
+1. `exec` guarda su estado de riesgo en **Redis** (`nocti:exec:risk_state`), que con
+   `appendonly` sobrevive a restarts. Mantiene la regla de los dos idiomas. Redis es más
+   débil que Postgres para contabilidad, pero la propiedad que necesitamos —que el halt
+   permanente sobreviva al proceso— la cumple.
+2. `exec` lee y escribe su estado a través de la **API de brain**. Postgres sigue siendo la
+   verdad, `exec` sigue sin credenciales de base de datos. Más correcto, más acoplado.
+3. **`exec` pierde su risk engine entero.** brain es la única autoridad, como dice la regla
+   del contrato ("un solo presupuesto de capital"). Es el destino final, pero exige que las
+   estrategias de `exec` pasen por brain, y eso es la Fase 4.
+
+Recomendación: (1) ahora, (3) en la Fase 4. Es incremental y no bloquea.
+
+Aquí se cierra el agujero del halt que no sobrevive a un restart.
+
+- Migrar el `state` en memoria de Bot1 a almacenamiento persistente. El halt permanente pasa
+  a sobrevivir a restarts.
 - Arreglar los `recordTrade(0, ...)`: el PnL realizado se calcula al cerrar, no al abrir.
   `exec` reporta el fill; `brain` calcula el PnL contra la posición en `portfolio_state`.
 - Deduplicar el `CONFIG` divergente entre `bot-config.ts` y `bot-with-dashboard.ts`

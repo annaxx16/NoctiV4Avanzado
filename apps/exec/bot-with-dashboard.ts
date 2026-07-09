@@ -413,7 +413,7 @@ async function initializeSmartMoney(sdk: PolymarketSDK) {
       const profile = await sdk.wallets.getWalletProfile(entry.address);
       if (!profile) continue;
 
-      const winRate = (profile as any).winRate ?? 0;
+      const winRate = profile.winRate ?? 0;
       const pnl = entry.pnl ?? 0;
       const trades = profile.tradeCount ?? 0;
 
@@ -866,8 +866,6 @@ async function setupBinanceAnalysis(sdk: PolymarketSDK) {
 
   await updateTrends();
   setInterval(updateTrends, 5 * 60 * 1000);
-  await updateTrends();
-  setInterval(updateTrends, 5 * 60 * 1000);
 }
 
 async function setupDirectTrading(sdk: PolymarketSDK) {
@@ -1080,15 +1078,16 @@ async function main() {
   // Handle Dashboard Commands
   dashboardEmitter.on('command', async (cmd: { command: string; payload: any }) => {
     if (cmd.command === 'toggleDryRun') {
-      const enable = cmd.payload.enabled;
-      if (CONFIG.dryRun === !enable) {
-        log('INFO', `Switching to ${!enable ? 'LIVE' : 'DRY RUN'} mode... (Requested by user)`);
+      // Contrato: `payload.enabled` ES el nuevo valor de dryRun.
+      //   enabled: true  -> dry run (no se firma nada)
+      //   enabled: false -> LIVE (se firma con dinero real)
+      // No es "enable live". El nombre es malo y no se puede cambiar sin tocar el
+      // dashboard, pero la ambigüedad se acaba aquí.
+      const nextDryRun = !!cmd.payload.enabled;
+      if (CONFIG.dryRun !== nextDryRun) {
+        log('INFO', `Switching to ${nextDryRun ? 'DRY RUN' : 'LIVE'} mode... (Requested by user)`);
 
-        // Update Config
-        CONFIG.dryRun = !enable; // payload.enabled is "isLive?" or "isDryRun?" - let's assume payload.enabled is the NEW STATE for dryRun? 
-        // Wait, usually toggles send the new desired state. 
-        // Using "enabled" as "isDryRun enabled"
-        CONFIG.dryRun = !!enable;
+        CONFIG.dryRun = nextDryRun;
 
         // Update State paper wallet
         if (CONFIG.dryRun && !state.paper) {
