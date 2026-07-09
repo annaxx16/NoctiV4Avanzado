@@ -13,6 +13,7 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from umbra.cache.universe_cache import UniverseMarket, publish_universe
 from umbra.config import settings
 from umbra.db.models import Market, MarketActive
 from umbra.db.session import get_sessionmaker
@@ -21,6 +22,24 @@ from umbra.polymarket.client import GammaClient
 from umbra.polymarket.schemas import GammaMarket
 
 log = get_logger("umbra.universe")
+
+
+def to_universe_markets(candidates: list[GammaMarket]) -> list[UniverseMarket]:
+    """Traduce los candidatos a la forma que exec entiende.
+
+    `_is_eligible` ya garantiza `condition_id` y `clob_token_ids` no vacíos, así
+    que aquí no hay que defenderse de eso.
+    """
+    return [
+        UniverseMarket(
+            condition_id=m.condition_id,
+            rank=rank,
+            token_ids=list(m.clob_token_ids or []),
+            liquidity_num=m.liquidity_num,
+            volume_24hr=m.volume_24hr,
+        )
+        for rank, m in enumerate(candidates, start=1)
+    ]
 
 
 def _is_eligible(m: GammaMarket) -> bool:
@@ -105,6 +124,14 @@ async def scan_once() -> int:
 
         result = await session.execute(select(MarketActive))
         size = len(result.scalars().all())
+
+    # Publicar para exec. Postgres ya está commiteado: si Redis está caído, el
+    # universo sigue siendo correcto y exec se quedará con el anterior hasta que
+    # caduque. No es motivo para tirar el escaneo.
+    try:
+        await publish_universe(to_universe_markets(candidates))
+    except Exception as exc:
+        log.warning("universe.publish_failed", error=repr(exc), size=size)
 
     log.info("universe.updated", size=size)
     return size

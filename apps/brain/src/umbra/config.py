@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # Poller
     poll_interval_sec: int = Field(default=30)
 
+    # Edad máxima de un book del WebSocket (escrito por exec) para fiarnos de sus
+    # precios al componer un snapshot. Muy por debajo de poll_interval_sec: si el
+    # book es más viejo que un tick del poller, Gamma ya es igual de bueno y
+    # además nunca miente sobre el estado del mercado.
+    ws_book_max_age_sec: int = Field(default=10)
+
     # Risk / sizing
     bankroll_usd: float = Field(default=1000.0)
     kelly_kappa: float = Field(default=0.15)

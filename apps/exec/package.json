@@ -14,6 +14,7 @@
     }
   },
   "scripts": {
+    "start": "tsx nocti-exec.ts",
     "build": "tsc",
     "prepublishOnly": "pnpm run build",
     "dev": "tsc --watch",
@@ -59,6 +60,7 @@
     "bottleneck": "^2.19.5",
     "dotenv": "^17.2.3",
     "ethers": "5",
+    "ioredis": "^5.11.1",
     "isomorphic-ws": "^5.0.0",
     "ws": "^8.18.3"
   },

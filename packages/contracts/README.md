@@ -7,13 +7,23 @@ Si un campo cambia aquí, cambia en los dos lados o el CI falla.
 
 | Canal | Tipo Redis | Productor | Consumidor | Fase |
 |---|---|---|---|---|
+| `nocti:universe` | `SET` con TTL (4 escaneos) | brain | exec | 1 |
 | `book:{condition_id}` | `SET` con TTL 60s | exec | brain | 1 |
 | `nocti:intents` | Stream + consumer group `exec` | brain | exec | 3 |
 | `nocti:fills` | Stream + consumer group `brain` | exec | brain | 3 |
 | `umbra:halt` / `umbra:halt:reason` | `SET` | ambos | ambos | 0 (ya existe) |
 
-Streams, no pub/sub. Pub/sub pierde mensajes si el consumidor está caído, y aquí
-los mensajes son órdenes.
+Streams, no pub/sub, para intents y fills. Pub/sub pierde mensajes si el consumidor
+está caído, y aquí los mensajes son órdenes.
+
+**exec no habla con Postgres.** No tiene `DATABASE_URL` ni le hace falta. brain es el
+dueño de la contabilidad y le pasa por `nocti:universe` lo único que exec necesita
+saber: qué mercados vigilar, sus `token_ids`, y la liquidez/volumen que da Gamma y el
+WebSocket no. Menos superficie, y los secretos de la base de datos en un solo sitio.
+
+El TTL de `nocti:universe` es deliberado. Si brain muere, el universo caduca, exec se
+desuscribe y deja de publicar; los books caducan a los 60s; cuando brain vuelve, su
+poller no encuentra nada fresco y cae a Gamma por su cuenta. El sistema degrada solo.
 
 ## Reglas que no se negocian
 

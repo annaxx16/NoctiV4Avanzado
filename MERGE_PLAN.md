@@ -187,19 +187,38 @@ Cada fase termina con un criterio de aceptación verificable. No se pasa a la si
 *Aceptación:* `docker compose up` arranca los cuatro servicios; `brain` pasa sus ~71 tests;
 `exec` pasa sus tests unit. Cero cambios de comportamiento.
 
-### Fase 1 — Market data en tiempo real (semana 1)
+### Fase 1 — Market data en tiempo real (semana 1) — **implementada**
 
 Riesgo cero: solo lectura, no se firma nada. Valida el bus antes de que haya dinero.
 
-- `exec`: nuevo `src/bus/book-publisher.ts`. Suscribe el WS oficial a los mercados del universo,
-  mergea con Gamma, escribe `book:{condition_id}` con la forma exacta que `brain` ya lee.
-- `brain`: extender `CachedBook` con `bids`/`asks` opcionales. `poll_interval_sec` deja de ser
-  la fuente; el poller queda como fallback si el book está stale (>60s TTL).
-- `exec` lee el universo activo de `markets_active` (Postgres), no de su propia config.
-  Una sola definición de qué mercados se vigilan.
+- `exec`: `src/bus/book.ts` (lógica pura) + `src/bus/book-publisher.ts` + entrada `nocti-exec.ts`.
+  Suscribe el WS oficial a los mercados del universo y escribe `book:{condition_id}` con la
+  forma exacta que `brain` ya lee, más `bids`/`asks` y `source`.
+- `brain`: `CachedBook` extendido con `bids`/`asks`/`source` opcionales, compatible hacia atrás.
+  El poller **prefiere** el book de WS si es fresco (`ws_book_max_age_sec`, 10s) y no lo pisa
+  con datos de Gamma.
+- `exec` **no habla con Postgres**. `brain` publica el universo en `nocti:universe` (con los
+  `token_ids`, la liquidez y el volumen que Gamma da y el WS no). `exec` solo habla Redis y
+  Polymarket, y no tiene credenciales de la base de datos.
 
-*Aceptación:* durante 24h, `brain` recibe books con latencia < 2s (hoy: hasta 30s), cero gaps
-> 60s, y el trigger de salida T0 `stale_book` no se dispara falsamente. El poller REST desactivado.
+**Corrección al plan original.** Decía *"el poller REST desactivado"* y *"`exec` lee el universo
+de `markets_active`"*. Las dos cosas estaban mal:
+
+1. El poller hace **una sola** petición en batch para todo el universo cada 30s, y es la única
+   fuente de `active` / `accepting_orders` (columnas `NOT NULL` en `book_snapshots`). Apagarlo
+   cambiaría 30s de latencia de precio por **5 minutos de ceguera** sobre si un mercado dejó de
+   aceptar órdenes. El poller se queda como red de seguridad; el WS aporta lo que Gamma no puede:
+   precio fresco y **profundidad real del libro**.
+2. Darle Postgres a `exec` reparte las credenciales de la contabilidad entre dos procesos sin
+   necesidad. El universo cabe en una clave de Redis.
+
+Lo que la Fase 1 **no** trae: evaluación dirigida por eventos. `brain` sigue evaluando en cada
+tick de 30s del poller, solo que ahora con precios de hace ~1s y con profundidad. Hacer que el
+book dispare la evaluación es un paso aparte, y no hace falta para la Fase 3.
+
+*Aceptación:* durante 24h con `NOCTI_BOOK_PUBLISHER_ENABLED=true`, `poller.tick` reporta
+`from_ws` ≈ tamaño del universo, el trigger de salida T0 `stale_book` no se dispara falsamente,
+y `skippedCrossed` se mantiene marginal frente a `published`.
 
 ### Fase 2 — Contabilidad unificada (semana 1-2)
 

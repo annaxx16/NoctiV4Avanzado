@@ -25,22 +25,26 @@ decisión está en [`MERGE_PLAN.md`](./MERGE_PLAN.md).
 
 ## Estado actual
 
-**Fase 0 completada: el monorepo existe y nada cambió de comportamiento.**
-
-El bus todavía no transporta nada. `NOCTI_BOOK_PUBLISHER_ENABLED=false` y
-`NOCTI_EXEC_MODE=off`: `exec` se levanta pero no publica el book ni consume intents.
-`brain` sigue con su poller REST de 30s. Es a propósito — cada fase se enciende con
-un flag y se apaga con el mismo flag.
-
 **No hay capital real en juego.** `DRY_RUN=true` y la clave privada de `exec` es un
 placeholder. `brain` está en `MODE=sim`.
 
 | Fase | Qué hace | Estado |
 |---|---|---|
 | 0 | Monorepo, contrato del bus, compose | Hecha |
-| 1 | `exec` publica el book por WebSocket; `brain` deja el poller | Pendiente |
+| 1 | `exec` publica el book por WebSocket; `brain` gana profundidad de libro | Código listo, sin verificar contra infra |
 | 2 | Contabilidad unificada; el halt sobrevive a los restarts | Pendiente |
 | 3 | Shadow execution: cuánto miente el backtest | Pendiente |
+
+Cada fase se enciende con un flag y se apaga con el mismo flag. Con
+`NOCTI_BOOK_PUBLISHER_ENABLED=false`, `exec` se levanta pero no publica, y `brain` se
+comporta exactamente como antes de la fusión: poller REST cada 30s contra Gamma.
+
+Con el publicador encendido, `exec` escribe `book:{condition_id}` desde el WebSocket
+oficial y `brain` toma de ahí el precio, pero **sigue haciendo su petición a Gamma**.
+No es redundancia: es una sola llamada en batch por tick, y es la única fuente de
+`active` / `accepting_orders`. El WebSocket aporta lo que Gamma no puede — precio de
+hace ~1s en vez de 30s, y la profundidad real del libro, sin la cual el modelo de
+slippage de `brain` es una heurística sobre `volume_24hr`.
 
 ## Arrancar
 

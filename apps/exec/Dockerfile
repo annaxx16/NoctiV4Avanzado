@@ -28,7 +28,7 @@ RUN npm ci --no-audit --no-fund
 # Código.
 COPY tsconfig.json ./
 COPY src ./src
-COPY bot-config.ts bot-with-dashboard.ts ./
+COPY nocti-exec.ts bot-config.ts bot-with-dashboard.ts ./
 COPY scripts ./scripts
 
 # El dashboard React ya viene compilado de la etapa anterior.
@@ -43,4 +43,7 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
     CMD curl -fsS http://127.0.0.1:3001/health || exit 1
 
-CMD ["npx", "tsx", "bot-with-dashboard.ts"]
+# El brazo de Nocti: publica el book en Redis, no firma nada.
+# El bot antiguo (bot-with-dashboard.ts) sigue en la imagen y se lanza a mano
+# mientras dure la migración: `docker compose run --rm exec npx tsx bot-with-dashboard.ts`
+CMD ["npx", "tsx", "nocti-exec.ts"]

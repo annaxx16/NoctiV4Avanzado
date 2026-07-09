@@ -75,6 +75,10 @@ services:
 
   # ------------------------------------------------------------------
   # EXEC — decide CÓMO llenar. El único que firma.
+  #
+  # Habla exactamente dos idiomas: Redis y Polymarket. Sin DATABASE_URL: no
+  # tiene credenciales de Postgres porque no las necesita. brain es el dueño de
+  # la contabilidad y le pasa el universo de mercados por Redis.
   # ------------------------------------------------------------------
   exec:
     build: ./apps/exec
@@ -86,10 +90,9 @@ services:
         required: false
     environment:
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql+psycopg://umbra:umbra_dev@postgres:5432/umbra
-      # Fase 0: exec no publica book ni consume intents. Solo se levanta.
-      # Estos flags se encienden en Fase 1 y Fase 3 respectivamente.
+      # Fase 1: publica book:{condition_id} desde el WebSocket oficial.
       NOCTI_BOOK_PUBLISHER_ENABLED: ${NOCTI_BOOK_PUBLISHER_ENABLED:-false}
+      # Fase 3: consume nocti:intents. `off` hasta entonces.
       NOCTI_EXEC_MODE: ${NOCTI_EXEC_MODE:-off}
       # Cinturón sobre tirantes: si alguien olvida DRY_RUN en .env, no se firma.
       DRY_RUN: ${DRY_RUN:-true}
@@ -97,8 +100,6 @@ services:
       - "127.0.0.1:3001:3001"
     depends_on:
       redis:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
 
   # ------------------------------------------------------------------
