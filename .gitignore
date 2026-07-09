@@ -1,0 +1,40 @@
+# --- Secretos. Nunca versionar. ---
+.env
+.env.*
+!.env.example
+
+# --- Repos originales pre-fusión ---
+# Se conservan en disco como punto de retorno, pero no se versionan aquí.
+# El punto de retorno real de exec es C:\Users\santi\Bot1 (tag pre-merge-nocti).
+UmbraNoiti/
+
+# --- Python (apps/brain) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node (apps/exec) ---
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# --- Runtime ---
+logs/
+.redis/
+*.log
+*.parquet
+*.duckdb
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.mcp.json

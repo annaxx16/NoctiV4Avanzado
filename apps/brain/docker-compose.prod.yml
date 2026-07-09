@@ -1,0 +1,92 @@
+# umbraNocti — stack completo self-contained para VPS.
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# Levanta Postgres + Redis (en volúmenes) + API (migra y corre uvicorn) +
+# dashboard. La API y el dashboard se hablan por la red interna de compose, así
+# que la API NO se expone a internet (solo a localhost del host, para debug).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: umbra_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: umbra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env.prod}
+      POSTGRES_DB: umbra
+    volumes:
+      - umbra_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umbra -d umbra"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: umbra_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - umbra_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: umbra-nocti:latest
+    container_name: umbra_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://umbra:${POSTGRES_PASSWORD}@postgres:5432/umbra
+      REDIS_URL: redis://redis:6379/0
+      MODE: ${MODE:-sim}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?define ADMIN_TOKEN en .env.prod}
+      UVICORN_LOG_LEVEL: ${UVICORN_LOG_LEVEL:-warning}
+    ports:
+      - "127.0.0.1:8000:8000"  # solo localhost del host; el dashboard usa la red interna
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  dashboard:
+    image: umbra-nocti:latest
+    container_name: umbra_dashboard
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      UMBRA_API_URL: http://api:8000
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    ports:
+      - "127.0.0.1:8501:8501"  # sin auth → solo localhost; accede por túnel SSH o reverse proxy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  umbra_pgdata:
+  umbra_redisdata:

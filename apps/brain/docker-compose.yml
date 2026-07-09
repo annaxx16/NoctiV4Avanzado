@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: umbra_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: umbra
+      POSTGRES_PASSWORD: umbra_dev
+      POSTGRES_DB: umbra
+    ports:
+      # Solo loopback: en un servidor público nadie debe alcanzar Postgres directo.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - umbra_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umbra -d umbra"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: umbra_redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - umbra_redisdata:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    image: umbra-app
+    container_name: umbra_app
+    restart: unless-stopped
+    env_file:
+      # Opcional: ADMIN_TOKEN, MODE, LOG_LEVEL, parámetros del edge, etc.
+      - path: .env
+        required: false
+    environment:
+      # Dentro de la red de compose la infra se resuelve por nombre de servicio.
+      # Esto pisa cualquier localhost que quede en .env.
+      DATABASE_URL: postgresql+psycopg://umbra:umbra_dev@postgres:5432/umbra
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      # Solo loopback: acceder desde fuera vía túnel SSH (ssh -L 8000:localhost:8000).
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  dashboard:
+    build: .
+    image: umbra-app
+    container_name: umbra_dashboard
+    restart: unless-stopped
+    command:
+      [
+        "streamlit",
+        "run",
+        "dashboard/app.py",
+        "--server.address=0.0.0.0",
+        "--server.port=8501",
+        "--server.headless=true",
+      ]
+    environment:
+      UMBRA_API_URL: http://app:8000
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  umbra_pgdata:
+  umbra_redisdata:

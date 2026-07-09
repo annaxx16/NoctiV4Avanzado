@@ -1,0 +1,17 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+*.parquet
+*.duckdb
+tests/
+docs/
+*.md
+scripts/*.ps1
+.DS_Store

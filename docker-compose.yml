@@ -1,0 +1,132 @@
+# Nocti — cerebro (brain, Python) + brazo (exec, Node), sobre Postgres y Redis.
+#
+#   docker compose up -d              → los 4 servicios core
+#   docker compose --profile ui up -d → + los dos dashboards
+#
+# Todo bindeado a 127.0.0.1: nada de esto debe ser alcanzable desde fuera.
+# Para verlo en remoto, túnel SSH:  ssh -L 8000:localhost:8000 usuario@host
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nocti_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: umbra
+      POSTGRES_PASSWORD: umbra_dev
+      POSTGRES_DB: umbra
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - nocti_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umbra -d umbra"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: nocti_redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - nocti_redisdata:/data
+    # appendonly: el kill-switch `umbra:halt` y las claves de idempotencia
+    # `nocti:intent:{id}` deben sobrevivir a un restart de Redis. Si se pierden,
+    # exec puede volver a firmar un intent ya ejecutado.
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------------
+  # BRAIN — decide QUÉ y CUÁNTO. Nunca toca una clave privada.
+  # ------------------------------------------------------------------
+  brain:
+    build: ./apps/brain
+    image: nocti-brain
+    container_name: nocti_brain
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Dentro de la red de compose la infra se resuelve por nombre de servicio.
+      # Esto pisa cualquier localhost que quede en .env.
+      DATABASE_URL: postgresql+psycopg://umbra:umbra_dev@postgres:5432/umbra
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ------------------------------------------------------------------
+  # EXEC — decide CÓMO llenar. El único que firma.
+  # ------------------------------------------------------------------
+  exec:
+    build: ./apps/exec
+    image: nocti-exec
+    container_name: nocti_exec
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://umbra:umbra_dev@postgres:5432/umbra
+      # Fase 0: exec no publica book ni consume intents. Solo se levanta.
+      # Estos flags se encienden en Fase 1 y Fase 3 respectivamente.
+      NOCTI_BOOK_PUBLISHER_ENABLED: ${NOCTI_BOOK_PUBLISHER_ENABLED:-false}
+      NOCTI_EXEC_MODE: ${NOCTI_EXEC_MODE:-off}
+      # Cinturón sobre tirantes: si alguien olvida DRY_RUN en .env, no se firma.
+      DRY_RUN: ${DRY_RUN:-true}
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------
+  # UI — perfil opcional. `docker compose --profile ui up -d`
+  # ------------------------------------------------------------------
+  brain-dashboard:
+    profiles: ["ui"]
+    build: ./apps/brain
+    image: nocti-brain
+    container_name: nocti_brain_dashboard
+    restart: unless-stopped
+    command:
+      [
+        "streamlit",
+        "run",
+        "dashboard/app.py",
+        "--server.address=0.0.0.0",
+        "--server.port=8501",
+        "--server.headless=true",
+      ]
+    environment:
+      UMBRA_API_URL: http://brain:8000
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      brain:
+        condition: service_healthy
+
+volumes:
+  nocti_pgdata:
+  nocti_redisdata:

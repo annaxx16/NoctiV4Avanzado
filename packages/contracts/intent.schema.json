@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nocti.local/contracts/intent.schema.json",
+  "title": "Intent",
+  "description": "Una PETICIÓN de operación. No es una orden. brain la produce en el stream `nocti:intents`; exec la consume (grupo `exec`), la valida, la deduplica por intent_id y decide cómo llenarla. Todos los decimales viajan como string.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "intent_id",
+    "ts",
+    "strategy",
+    "mode",
+    "condition_id",
+    "token_id",
+    "side",
+    "size_usd",
+    "limit_price",
+    "tif",
+    "max_slippage_bps",
+    "expires_at"
+  ],
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUIDv4 generado por brain. Clave de idempotencia: exec hace SET NX antes de firmar."
+    },
+    "ts": { "type": "string", "format": "date-time" },
+
+    "strategy": {
+      "enum": ["overreaction", "momentum", "arb", "diparb", "smartmoney"],
+      "description": "Presupuesto de capital y puerta de aprobación separados por estrategia. arb/diparb son estructurales; overreaction/momentum son direccionales y no cruzan a live sin FINDINGS_W1."
+    },
+
+    "mode": {
+      "enum": ["shadow", "live"],
+      "description": "shadow: exec cotiza contra el book real y devuelve el fill que HABRÍA obtenido, sin firmar. live: exec firma."
+    },
+
+    "condition_id": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+    "token_id": { "type": "string", "minLength": 1 },
+
+    "side": { "enum": ["BUY", "SELL"] },
+
+    "size_usd": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?$",
+      "description": "Calculado por el risk engine de brain (src/umbra/risk/sizer.py). exec NO lo modifica al alza. Un solo presupuesto, una sola wallet."
+    },
+    "limit_price": {
+      "type": "string",
+      "pattern": "^0(\\.[0-9]+)?$|^1(\\.0+)?$",
+      "description": "Entre 0 y 1. exec lo redondea al tick size hacia el lado conservador (a la baja en BUY, al alza en SELL)."
+    },
+
+    "tif": {
+      "enum": ["GTC", "FOK", "IOC"],
+      "description": "Time in force."
+    },
+    "max_slippage_bps": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "Si el fill esperado excede esto, exec rechaza con status REJECTED en vez de llenar peor."
+    },
+
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "exec descarta el intent si lo lee después de esta hora. Protege contra un backlog del stream que reviva señales viejas tras una caída."
+    },
+
+    "signal_id": {
+      "type": ["integer", "null"],
+      "description": "FK a la tabla `signals` de brain. Permite auditar qué señal originó qué fill."
+    }
+  }
+}

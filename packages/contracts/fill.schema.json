@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nocti.local/contracts/fill.schema.json",
+  "title": "Fill",
+  "description": "El RESULTADO de un intent. exec lo produce en el stream `nocti:fills`; brain lo consume (grupo `brain`) y lo escribe en la tabla `fills`. Un intent produce exactamente un fill terminal. Todos los decimales viajan como string.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "intent_id",
+    "ts",
+    "mode",
+    "status",
+    "filled_shares",
+    "avg_price",
+    "notional_usd",
+    "fees_usd"
+  ],
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "El mismo del intent. brain casa uno con otro por aquí."
+    },
+    "ts": { "type": "string", "format": "date-time" },
+
+    "mode": {
+      "enum": ["shadow", "live"],
+      "description": "Se copia del intent. En shadow, order_id y tx_hash van vacíos: no existe la orden."
+    },
+
+    "status": {
+      "enum": ["FILLED", "PARTIAL", "REJECTED", "EXPIRED", "ERROR"],
+      "description": "REJECTED: exec se negó (halt activo, slippage > max_slippage_bps, size no firmado por el risk engine). EXPIRED: llegó después de expires_at. ERROR: fallo de ejecución; exec probablemente ya escribió umbra:halt."
+    },
+
+    "filled_shares": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "avg_price": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "notional_usd": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "fees_usd": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+
+    "order_id": {
+      "type": "string",
+      "description": "ID de la orden en el CLOB. Vacío en shadow."
+    },
+    "tx_hash": {
+      "type": "string",
+      "description": "Hash on-chain si la operación tocó CTF (split/merge/redeem). Vacío en shadow."
+    },
+
+    "expected_slippage_bps": {
+      "type": ["integer", "null"],
+      "description": "Lo que brain predijo con su modelo (execution/paper.py). Copiado del intent para que la comparación viva en la misma fila."
+    },
+    "realized_slippage_bps": {
+      "type": ["integer", "null"],
+      "description": "Lo que de verdad costó, contra el mid en el momento del intent. La diferencia con expected_slippage_bps es EL entregable de la Fase 3: cuánto miente el backtest."
+    },
+
+    "error": {
+      "type": "string",
+      "description": "Vacío si status no es ERROR/REJECTED. Legible por humanos, no se parsea."
+    }
+  }
+}

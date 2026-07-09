@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nocti.local/contracts/book.schema.json",
+  "title": "CachedBook",
+  "description": "Estado del order book de un mercado. Clave Redis: book:{condition_id}, TTL 60s. Productor: exec (WebSocket oficial). Consumidor: brain (src/umbra/cache/book_cache.py). Los campos hasta volume_24hr son el contrato existente y NO pueden cambiar de forma. bids/asks son la extensión de la Fase 1.",
+  "type": "object",
+  "required": [
+    "condition_id",
+    "ts",
+    "best_bid",
+    "best_ask",
+    "last_trade_price",
+    "spread",
+    "liquidity_num",
+    "volume_24hr"
+  ],
+  "properties": {
+    "condition_id": {
+      "type": "string",
+      "pattern": "^0x[a-fA-F0-9]{64}$"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 con timezone. Momento del snapshot, no de la escritura."
+    },
+    "best_bid": { "type": ["number", "null"] },
+    "best_ask": { "type": ["number", "null"] },
+    "last_trade_price": { "type": ["number", "null"] },
+    "spread": { "type": ["number", "null"] },
+
+    "liquidity_num": {
+      "type": ["number", "null"],
+      "description": "Viene de Gamma, no del WebSocket. exec mergea ambas fuentes."
+    },
+    "volume_24hr": {
+      "type": ["number", "null"],
+      "description": "Viene de Gamma. Hoy brain lo usa como proxy de liquidez para estimar slippage; con bids/asks presentes debe dejar de hacerlo."
+    },
+
+    "bids": {
+      "$ref": "#/$defs/levels",
+      "description": "Extensión Fase 1. Niveles del book, mejor primero. Opcional: los lectores viejos lo ignoran."
+    },
+    "asks": {
+      "$ref": "#/$defs/levels",
+      "description": "Extensión Fase 1. Niveles del book, mejor primero."
+    },
+    "source": {
+      "enum": ["gamma_poll", "clob_ws"],
+      "description": "Quién escribió esto. Permite medir la migración del poller al WS sin adivinar."
+    }
+  },
+  "$defs": {
+    "levels": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "prefixItems": [
+          { "type": "string", "description": "precio, decimal como string" },
+          { "type": "string", "description": "tamaño en shares, decimal como string" }
+        ]
+      }
+    }
+  }
+}

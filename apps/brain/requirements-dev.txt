@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# Tooling de calidad
+ruff==0.7.4
+mypy==1.13.0
+
+# greenlet vive en requirements.txt (3.5.1). Fijarlo aquí a otra versión hacía
+# `pip install -r requirements-dev.txt` irresoluble, porque este fichero hace
+# `-r requirements.txt` en la primera línea.
