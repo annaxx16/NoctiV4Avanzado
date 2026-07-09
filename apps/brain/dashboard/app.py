@@ -22,7 +22,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 API_URL = os.environ.get("UMBRA_API_URL", "http://127.0.0.1:8000")
-ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
 
 def _get(path: str, params: dict | None = None):
@@ -37,10 +36,9 @@ def _get(path: str, params: dict | None = None):
 
 
 def _post(path: str):
-    headers = {"X-Admin-Token": ADMIN_TOKEN} if ADMIN_TOKEN else {}
     try:
         with httpx.Client(timeout=10.0) as client:
-            r = client.post(f"{API_URL}{path}", headers=headers)
+            r = client.post(f"{API_URL}{path}")
             r.raise_for_status()
             return r.json()
     except Exception as exc:
@@ -49,12 +47,12 @@ def _post(path: str):
 
 
 st.set_page_config(
-    page_title="umbraNocti V3 — Cockpit",
+    page_title="umbraNocti — Cockpit",
     page_icon=":crescent_moon:",
     layout="wide",
 )
 
-st.title("umbraNocti — Cockpit v3")
+st.title("umbraNocti — Cockpit v2")
 st.caption(f"API: `{API_URL}`")
 
 # ---------------------------------------------------------------------------
@@ -114,7 +112,11 @@ k7.metric("Peak equity", f"${portfolio.get('peak_equity_usd', 0):.2f}")
 k8.metric("Open positions", portfolio.get("n_open_positions", 0))
 
 cb = health.get("circuit_breakers", {})
-if health.get("halted") or cb.get("dd_halt_active"):
+if health.get("halted_by_redis_failure"):
+    st.error(
+        "🔴 Redis no disponible; el HALT puede ser un falso positivo. Verifica Redis y vuelve a cargar."
+    )
+elif health.get("halted") or cb.get("dd_halt_active"):
     st.error("⛔ HALT activo o DD ≥ umbral de halt. El bot no toma nuevas señales y ha intentado flatten.")
 elif cb.get("dd_throttle_active"):
     st.warning("⚠️ DD throttle activo — sizing reducido a la mitad.")

@@ -1,17 +1,28 @@
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from umbra import __version__
+from umbra.analytics.edge_performance import latest_edge_performance
+from umbra.analytics.edge_performance import refresh_edge_performance
+from umbra.analytics.edge_weights import latest_edge_weights, refresh_edge_weights
+from umbra.analytics.learning import latest_learning_snapshot, run_learning_once
 from umbra.cache.book_cache import get_book as cache_get_book
-from umbra.cache.redis_client import dispose as redis_dispose
-from umbra.cache.redis_client import ping as redis_ping
+from umbra.cache.redis_client import dispose as redis_dispose, ping as redis_ping
 from umbra.config import settings
-from umbra.db.models import BookSnapshot, Market, MarketActive, PaperFill, Signal
+from umbra.db.models import (
+    BookSnapshot,
+    Market,
+    MarketActive,
+    PaperFill,
+    Signal,
+    SignalAudit,
+    TradeOutcome,
+)
 from umbra.db.session import dispose as db_dispose
 from umbra.db.session import get_session
 from umbra.engine.exit_engine import flatten_all
@@ -19,7 +30,7 @@ from umbra.features.calculator import calculate_features
 from umbra.features.loader import load_snapshots
 from umbra.logging import configure_logging, get_logger
 from umbra.portfolio.manager import equity_curve, portfolio_snapshot, position_views
-from umbra.risk.engine import halt_reason, is_halted, set_halt
+from umbra.risk.engine import is_halted, set_halt
 from umbra.scheduler.background import BackgroundTasks
 from umbra.ta.levels import classify_levels
 from umbra.ta.ohlc import read_bars
@@ -165,19 +176,17 @@ async def market_book(condition_id: str) -> dict[str, Any]:
 
 @app.get("/stats")
 async def stats(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    from sqlalchemy import func as sa_func
-
-    market_count = (await session.execute(select(sa_func.count(Market.condition_id)))).scalar()
+    market_count = (await session.execute(select(func.count(Market.condition_id)))).scalar()
     snapshot_count = (
-        await session.execute(select(sa_func.count(BookSnapshot.id)))
+        await session.execute(select(func.count(BookSnapshot.id)))
     ).scalar()
     universe_size = (
-        await session.execute(select(sa_func.count(MarketActive.condition_id)))
+        await session.execute(select(func.count(MarketActive.condition_id)))
     ).scalar()
-    signal_count = (await session.execute(select(sa_func.count(Signal.id)))).scalar()
+    signal_count = (await session.execute(select(func.count(Signal.id)))).scalar()
     accepted_count = (
         await session.execute(
-            select(sa_func.count(Signal.id)).where(Signal.accepted.is_(True))
+            select(func.count(Signal.id)).where(Signal.accepted.is_(True))
         )
     ).scalar()
     return {
@@ -186,6 +195,230 @@ async def stats(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
         "universe_size": universe_size,
         "signals_total": signal_count,
         "signals_accepted": accepted_count,
+    }
+
+
+@app.get("/analytics/signal-funnel")
+async def signal_funnel(
+    hours: int = 24,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    if hours < 1 or hours > 24 * 30:
+        raise HTTPException(status_code=400, detail="hours must be in [1, 720]")
+
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    base = SignalAudit.timestamp >= since
+
+    generated = (
+        await session.execute(select(func.count(SignalAudit.id)).where(base))
+    ).scalar() or 0
+    accepted = (
+        await session.execute(
+            select(func.count(SignalAudit.id)).where(base, SignalAudit.accepted.is_(True))
+        )
+    ).scalar() or 0
+    rejected = (
+        await session.execute(
+            select(func.count(SignalAudit.id)).where(base, SignalAudit.rejected.is_(True))
+        )
+    ).scalar() or 0
+    trades_executed = (
+        await session.execute(
+            select(func.count(PaperFill.id)).where(
+                PaperFill.ts >= since,
+                PaperFill.action == "OPEN",
+            )
+        )
+    ).scalar() or 0
+    trades_closed = (
+        await session.execute(
+            select(func.count(PaperFill.id)).where(
+                PaperFill.ts >= since,
+                PaperFill.action == "CLOSE",
+            )
+        )
+    ).scalar() or 0
+
+    reason_rows = (
+        await session.execute(
+            select(
+                func.coalesce(SignalAudit.rejected_reason, "unknown"),
+                func.count(SignalAudit.id),
+            )
+            .where(base, SignalAudit.rejected.is_(True))
+            .group_by(func.coalesce(SignalAudit.rejected_reason, "unknown"))
+            .order_by(desc(func.count(SignalAudit.id)))
+            .limit(25)
+        )
+    ).all()
+
+    category_counts = {}
+    for key, column in {
+        "risk_blocked": SignalAudit.risk_blocked,
+        "liquidity_blocked": SignalAudit.liquidity_blocked,
+        "exposure_blocked": SignalAudit.exposure_blocked,
+        "composite_blocked": SignalAudit.composite_blocked,
+        "execution_blocked": SignalAudit.execution_blocked,
+    }.items():
+        category_counts[key] = (
+            await session.execute(
+                select(func.count(SignalAudit.id)).where(base, column.is_(True))
+            )
+        ).scalar() or 0
+
+    return {
+        "window_hours": hours,
+        "since": since.isoformat(),
+        "signals_generated": generated,
+        "signals_accepted": accepted,
+        "signals_rejected": rejected,
+        "trades_executed": trades_executed,
+        "trades_closed": trades_closed,
+        "acceptance_rate": accepted / generated if generated else 0.0,
+        "rejection_rate": rejected / generated if generated else 0.0,
+        "reasons_distribution": [
+            {"reason": reason, "count": count} for reason, count in reason_rows
+        ],
+        "blocked_categories": category_counts,
+    }
+
+
+@app.get("/analytics/trade-outcomes")
+async def trade_outcomes(
+    limit: int = 50,
+    edge: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be in [1, 500]")
+    stmt = select(TradeOutcome).order_by(desc(TradeOutcome.closed_at)).limit(limit)
+    if edge:
+        stmt = stmt.where(TradeOutcome.edge_source == edge)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": row.id,
+            "close_fill_id": row.close_fill_id,
+            "entry_signal_id": row.entry_signal_id,
+            "market_id": row.market_id,
+            "side": row.side,
+            "opened_at": row.opened_at.isoformat() if row.opened_at else None,
+            "closed_at": row.closed_at.isoformat(),
+            "entry_price": float(row.entry_price) if row.entry_price is not None else None,
+            "exit_price": float(row.exit_price),
+            "holding_time_hours": (
+                float(row.holding_time_hours)
+                if row.holding_time_hours is not None
+                else None
+            ),
+            "return_pct": float(row.return_pct) if row.return_pct is not None else None,
+            "profit_usd": float(row.profit_usd),
+            "loss_usd": float(row.loss_usd),
+            "realized_pnl_usd": float(row.realized_pnl_usd),
+            "winning_trade": row.winning_trade,
+            "losing_trade": row.losing_trade,
+            "edge_source": row.edge_source,
+            "exit_reason": row.exit_reason,
+            "market_conditions": row.market_conditions,
+            "mode": row.mode,
+        }
+        for row in rows
+    ]
+
+
+@app.get("/analytics/edge-performance")
+async def edge_performance(
+    refresh: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    if refresh:
+        await refresh_edge_performance(session)
+        await session.commit()
+    rows = await latest_edge_performance(session)
+    return [
+        {
+            "edge_name": row.edge_name,
+            "signals_generated": row.signals_generated,
+            "signals_accepted": row.signals_accepted,
+            "trades_executed": row.trades_executed,
+            "wins": row.wins,
+            "losses": row.losses,
+            "avg_return": float(row.avg_return) if row.avg_return is not None else None,
+            "profit_factor": (
+                float(row.profit_factor) if row.profit_factor is not None else None
+            ),
+            "sharpe": float(row.sharpe) if row.sharpe is not None else None,
+            "expectancy": float(row.expectancy) if row.expectancy is not None else None,
+            "max_drawdown": (
+                float(row.max_drawdown) if row.max_drawdown is not None else None
+            ),
+            "rolling_7d": row.rolling_7d,
+            "rolling_30d": row.rolling_30d,
+            "rolling_100_trades": row.rolling_100_trades,
+            "updated_at": row.updated_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+@app.get("/analytics/edge-weights")
+async def edge_weights(
+    refresh: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    if refresh:
+        await refresh_edge_weights(session)
+        await session.commit()
+    rows = await latest_edge_weights(session)
+    return [
+        {
+            "edge_name": row.edge_name,
+            "raw_score": float(row.raw_score),
+            "weight": float(row.weight),
+            "profit_factor": float(row.profit_factor) if row.profit_factor is not None else None,
+            "expectancy": float(row.expectancy) if row.expectancy is not None else None,
+            "sharpe": float(row.sharpe) if row.sharpe is not None else None,
+            "stability_score": (
+                float(row.stability_score) if row.stability_score is not None else None
+            ),
+            "rolling_30d_score": (
+                float(row.rolling_30d_score) if row.rolling_30d_score is not None else None
+            ),
+            "rolling_100_trades_score": (
+                float(row.rolling_100_trades_score)
+                if row.rolling_100_trades_score is not None
+                else None
+            ),
+            "metadata": row.metadata_json,
+            "updated_at": row.updated_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+@app.get("/analytics/learning-status")
+async def learning_status(
+    refresh: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    if refresh:
+        snapshot = await run_learning_once(session)
+        await session.commit()
+    else:
+        snapshot = await latest_learning_snapshot(session)
+
+    if snapshot is None:
+        return {"status": "never_run", "snapshot": None}
+    return {
+        "status": snapshot.status,
+        "snapshot": {
+            "id": snapshot.id,
+            "ts": snapshot.ts.isoformat(),
+            "edges_evaluated": snapshot.edges_evaluated,
+            "weights_updated": snapshot.weights_updated,
+            "report": snapshot.report_json,
+            "error": snapshot.error,
+        },
     }
 
 
@@ -269,7 +502,6 @@ async def portfolio_health(
     snap = await portfolio_snapshot(session)
     halted = await is_halted()
     redis_ok = await redis_ping()
-    active_halt_reason = await halt_reason() if halted else None
     dd_throttle = snap.drawdown_pct <= -settings.dd_throttle_pct
     dd_halt = snap.drawdown_pct <= -settings.dd_halt_pct
     return {
@@ -282,7 +514,6 @@ async def portfolio_health(
         "n_open_positions": snap.n_open_positions,
         "redis_ok": redis_ok,
         "halted": halted,
-        "halt_reason": active_halt_reason,
         "halted_by_redis_failure": halted and not redis_ok,
         "halted_by_kill_switch": halted and redis_ok,
         "circuit_breakers": {
@@ -478,7 +709,7 @@ async def admin_halt(
     _: None = Depends(require_admin),
 ) -> dict[str, Any]:
     """Halt = bloquea nuevas señales Y cierra TODAS las posiciones abiertas."""
-    await set_halt(True, reason="manual")
+    await set_halt(True)
     n = await flatten_all(session, reason="admin_halt")
     await session.commit()
     return {"status": "halted", "flattened": n}

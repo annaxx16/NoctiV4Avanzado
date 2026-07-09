@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from umbra.analytics.signal_audit import audit_signal
 from umbra.cache.redis_client import get_redis
 from umbra.config import settings
 from umbra.db.models import Signal
@@ -81,6 +82,14 @@ async def evaluate_market(
         )
         session.add(signal)
         await session.flush()
+        await audit_signal(
+            session,
+            signal,
+            metadata={
+                "stage": "ta",
+                "ta_confidence": ta_verdict.confidence,
+            },
+        )
         log.info(
             "signal.rejected_by_ta",
             condition_id=condition_id,
@@ -115,6 +124,15 @@ async def evaluate_market(
     )
     session.add(signal)
     await session.flush()
+    await audit_signal(
+        session,
+        signal,
+        metadata={
+            "stage": "risk",
+            "kappa_factor": decision.kappa_factor,
+            "ta_confidence": ta_verdict.confidence,
+        },
+    )
 
     if decision.accepted:
         await _emit_to_stream(

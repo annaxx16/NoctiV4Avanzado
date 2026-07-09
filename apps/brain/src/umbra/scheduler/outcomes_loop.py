@@ -27,7 +27,7 @@ async def outcomes_loop(stop_event: asyncio.Event) -> None:
         try:
             await outcomes_tick()
         except Exception as exc:
-            log.warning("outcomes_loop.tick_failed", error=repr(exc))
+            log.error("outcomes_loop.tick_failed", error=repr(exc))
         try:
             await asyncio.wait_for(
                 stop_event.wait(), timeout=settings.outcomes_resolver_interval_sec

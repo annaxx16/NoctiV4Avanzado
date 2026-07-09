@@ -1,4 +1,4 @@
-"""El universo de mercados vivos, publicado en Redis para que exec lo lea.
+﻿"""El universo de mercados vivos, publicado en Redis para que exec lo lea.
 
 Clave: nocti:universe
 

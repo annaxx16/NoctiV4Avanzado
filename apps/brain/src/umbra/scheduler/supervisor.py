@@ -16,7 +16,7 @@ from umbra.db.session import get_sessionmaker
 from umbra.engine.exit_engine import flatten_all
 from umbra.logging import get_logger
 from umbra.portfolio.manager import portfolio_snapshot
-from umbra.risk.engine import halt_reason, is_halted, set_halt
+from umbra.risk.engine import is_halted, set_halt
 
 log = get_logger("umbra.supervisor")
 
@@ -25,24 +25,6 @@ async def supervisor_tick() -> None:
     sm = get_sessionmaker()
     async with sm() as session:
         snap = await portfolio_snapshot(session)
-        already = await is_halted()
-        active_reason = await halt_reason() if already else None
-
-        if (
-            already
-            and active_reason == "auto_dd"
-            and snap.n_open_positions == 0
-            and snap.drawdown_pct > -settings.dd_halt_pct
-        ):
-            await set_halt(False)
-            log.info(
-                "supervisor.auto_resume",
-                dd_pct=snap.drawdown_pct,
-                equity=snap.equity_usd,
-                peak=snap.peak_equity_usd,
-            )
-            return
-
     if snap.drawdown_pct <= -settings.dd_halt_pct:
         already = await is_halted()
         if not already:
@@ -52,7 +34,7 @@ async def supervisor_tick() -> None:
                 equity=snap.equity_usd,
                 peak=snap.peak_equity_usd,
             )
-            await set_halt(True, reason="auto_dd")
+            await set_halt(True)
         # Flatten siempre que estemos en zona de halt — idempotente si ya 0 posiciones
         async with sm() as session:
             n = await flatten_all(session, reason="supervisor_auto_halt")

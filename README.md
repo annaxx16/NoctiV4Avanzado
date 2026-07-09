@@ -75,19 +75,36 @@ npx tsx bot-with-dashboard.ts
 ## Tests
 
 ```bash
-cd apps/brain && .venv/Scripts/python -m pytest        # ~71 tests, sin infra
-cd apps/exec  && npm test                              # unit (vitest)
+cd apps/exec  && npm test                              # 67, unit (vitest)
 cd apps/exec  && npm run test:integration              # llama a las APIs de verdad
+
+cd apps/brain && .venv/Scripts/python -m pytest        # 89 de lógica pura, sin infra
 ```
 
-Los tests anti-lookahead de `brain` (`tests/leakage/`) no son opcionales. Si fallan,
-el backtest está mintiendo y todo lo demás da igual.
+Los 14 tests restantes de `brain` necesitan Postgres **y no pueden usar el de
+producción**: escriben y borran filas. Levanta el del perfil `db` y apúntalos ahí:
+
+```bash
+docker compose --profile db up -d
+export UMBRA_TEST_DATABASE_URL=postgresql+psycopg://umbra:umbra_dev@localhost:5434/umbra_test
+cd apps/brain && .venv/Scripts/python -m alembic upgrade head && .venv/Scripts/python -m pytest
+```
+
+Sin esa variable, `tests/conftest.py` apunta a una base inexistente **a propósito**, y
+rechaza cualquier URL cuyo nombre de base no contenga `test`. No es paranoia: una tanda
+de `pytest` metió 31 snapshots sintéticos dentro de la serie histórica real, y hubo que
+limpiarlos a mano. Fallar ruidosamente es la dirección segura del error.
+
+Los tests anti-lookahead (`tests/leakage/`) no son opcionales. Si fallan, el backtest
+está mintiendo y todo lo demás da igual.
 
 ## Mapa
 
 | Ruta | Qué es |
 |---|---|
 | `apps/brain/src/umbra/edges/` | Las señales. Hoy: overreaction (principal) y momentum |
+| `apps/brain/src/umbra/analytics/` | Capa de aprendizaje: pesos de edge, auditoría de señales |
+| `apps/brain/src/umbra/research/` | Exploratorio: régimen, drawdown, series sintéticas |
 | `apps/brain/src/umbra/risk/engine.py` | Las 11 compuertas. Fail-closed. Lo más crítico del sistema |
 | `apps/brain/src/umbra/engine/exit_engine.py` | Los 11 triggers de salida, priorizados |
 | `apps/brain/src/umbra/backtest/` | Replay anti-lookahead, walk-forward, métricas |

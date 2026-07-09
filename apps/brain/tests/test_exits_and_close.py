@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 
 from umbra.db.models import (
     BookSnapshot,
@@ -16,6 +16,7 @@ from umbra.db.models import (
     PaperFill,
     PaperPosition,
     Signal,
+    TradeOutcome,
 )
 from umbra.db.session import get_sessionmaker
 from umbra.engine.exit_engine import (
@@ -68,6 +69,7 @@ async def _seed_snapshots_flat(session, cid: str, base: float, n: int = 12) -> N
 
 
 async def _cleanup(session, cid: str) -> None:
+    await session.execute(delete(TradeOutcome).where(TradeOutcome.market_id == cid))
     await session.execute(delete(PaperFill).where(PaperFill.market_id == cid))
     await session.execute(delete(PaperPosition).where(PaperPosition.market_id == cid))
     await session.execute(delete(Signal).where(Signal.market_id == cid))
@@ -141,6 +143,17 @@ async def test_execute_close_produces_realized_pnl_and_closes_position():
         assert pos2.status == "closed"
         assert float(pos2.shares) == 0
         assert float(pos2.realized_pnl_usd) > 0
+        outcome = (
+            await session.execute(
+                select(TradeOutcome).where(TradeOutcome.market_id == cid)
+            )
+        ).scalar_one()
+        assert outcome.close_fill_id == res.fill_id
+        assert outcome.exit_reason == "manual_test"
+        assert outcome.winning_trade is True
+        assert outcome.losing_trade is False
+        assert float(outcome.realized_pnl_usd) == pytest.approx(res.realized_pnl_usd)
+        assert outcome.return_pct is not None
 
         await _cleanup(session, cid)
 
@@ -521,18 +534,6 @@ async def test_flat_portfolio_resets_drawdown_cycle_after_old_peak():
     async with sm() as session:
         await _cleanup(session, cid)
         await _seed_market(session, cid)
-
-        open_count = (
-            await session.execute(
-                select(func.count()).select_from(PaperPosition).where(
-                    PaperPosition.status == "open",
-                    PaperPosition.shares > 0,
-                    PaperPosition.market_id != cid,
-                )
-            )
-        ).scalar()
-        if open_count:
-            pytest.skip("requires a flat portfolio in the shared integration DB")
 
         now = datetime.now(UTC)
         old_peak = EquitySnapshot(

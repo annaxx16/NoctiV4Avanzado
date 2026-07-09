@@ -16,13 +16,20 @@ services:
   #
   #   docker compose --profile db up -d
   #
-  # Por defecto brain usa el PostgreSQL 18 que ya corre en esta máquina, porque
-  # ahí vive el histórico de `book_snapshots` acumulado — el que hace falta para
-  # el veredicto go/no-go. Arrancar este contenedor te da una base vacía.
+  # Este NO es el Postgres de producción. brain usa el PostgreSQL 18 de la
+  # máquina, donde vive el histórico de `book_snapshots` que alimenta el veredicto
+  # go/no-go. Éste es **la base de los tests**, que escriben y borran filas:
   #
-  # Se expone en el 5434 y no en el 5432 a propósito: el 5432 lo tiene PG18 y el
-  # 5433 PG15. Chocar de puertos aquí sería un rato perdido buscando por qué la
-  # migración de Alembic se aplicó "en la base equivocada".
+  #   $env:UMBRA_TEST_DATABASE_URL = "postgresql+psycopg://umbra:umbra_dev@localhost:5434/umbra_test"
+  #   cd apps/brain && .venv/Scripts/python -m alembic upgrade head
+  #   .venv/Scripts/python -m pytest
+  #
+  # Sin esa variable, tests/conftest.py apunta a una base inexistente a propósito.
+  # Antes no lo hacía, y una tanda de pytest metió 31 snapshots sintéticos dentro
+  # de la serie histórica real.
+  #
+  # Puerto 5434 y no 5432: el 5432 lo tiene PG18 y el 5433 PG15. Chocar aquí sería
+  # un rato perdido buscando por qué Alembic migró "la base equivocada".
   postgres:
     profiles: ["db"]
     image: postgres:16-alpine
@@ -31,13 +38,13 @@ services:
     environment:
       POSTGRES_USER: umbra
       POSTGRES_PASSWORD: umbra_dev
-      POSTGRES_DB: umbra
+      POSTGRES_DB: umbra_test
     ports:
       - "127.0.0.1:5434:5432"
     volumes:
       - nocti_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U umbra -d umbra"]
+      test: ["CMD-SHELL", "pg_isready -U umbra -d umbra_test"]
       interval: 5s
       timeout: 3s
       retries: 10

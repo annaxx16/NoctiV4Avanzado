@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
@@ -132,6 +133,44 @@ class Signal(Base):
     __table_args__ = (Index("ix_signals_market_ts", "market_id", "ts"),)
 
 
+class SignalAudit(Base):
+    """Auditoria normalizada de cada senal evaluada por el orchestrator."""
+
+    __tablename__ = "signal_audit"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("signals.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    market_id: Mapped[str] = mapped_column(
+        String(80), ForeignKey("markets.condition_id", ondelete="CASCADE"), index=True
+    )
+    market_name: Mapped[str | None] = mapped_column(Text)
+    edge_name: Mapped[str] = mapped_column(String(40), index=True)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    direction: Mapped[str] = mapped_column(String(16))
+
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    rejected: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    rejected_reason: Mapped[str | None] = mapped_column(Text)
+
+    risk_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    liquidity_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    exposure_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    composite_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    execution_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        Index("ix_signal_audit_market_ts", "market_id", "timestamp"),
+        Index("ix_signal_audit_edge_ts", "edge_name", "timestamp"),
+    )
+
+
 class PaperFill(Base):
     """Fill simulado contra el book real (paper trading).
 
@@ -166,6 +205,109 @@ class PaperFill(Base):
     )
 
     mode: Mapped[str] = mapped_column(String(8))
+
+
+class TradeOutcome(Base):
+    """Resultado normalizado de cada cierre de paper/live simulado."""
+
+    __tablename__ = "trade_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    close_fill_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("fills_paper.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    entry_signal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("signals.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    market_id: Mapped[str] = mapped_column(
+        String(80), ForeignKey("markets.condition_id", ondelete="CASCADE"), index=True
+    )
+    side: Mapped[str] = mapped_column(String(16))
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    exit_price: Mapped[Decimal] = mapped_column(Numeric(12, 6))
+    holding_time_hours: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    return_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    profit_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6), default=Decimal("0"))
+    loss_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6), default=Decimal("0"))
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6), default=Decimal("0"))
+    winning_trade: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    losing_trade: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    edge_source: Mapped[str | None] = mapped_column(String(40), index=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(80))
+    market_conditions: Mapped[dict | None] = mapped_column(JSON)
+    mode: Mapped[str] = mapped_column(String(8))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_trade_outcomes_edge_closed", "edge_source", "closed_at"),
+        Index("ix_trade_outcomes_market_closed", "market_id", "closed_at"),
+    )
+
+
+class EdgePerformance(Base):
+    """Metricas agregadas por edge para aprendizaje estadistico."""
+
+    __tablename__ = "edge_performance"
+
+    edge_name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    signals_generated: Mapped[int] = mapped_column(BigInteger, default=0)
+    signals_accepted: Mapped[int] = mapped_column(BigInteger, default=0)
+    trades_executed: Mapped[int] = mapped_column(BigInteger, default=0)
+    wins: Mapped[int] = mapped_column(BigInteger, default=0)
+    losses: Mapped[int] = mapped_column(BigInteger, default=0)
+    avg_return: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    profit_factor: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    sharpe: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    expectancy: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    max_drawdown: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    rolling_7d: Mapped[dict | None] = mapped_column(JSON)
+    rolling_30d: Mapped[dict | None] = mapped_column(JSON)
+    rolling_100_trades: Mapped[dict | None] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EdgeWeight(Base):
+    """Peso dinamico calculado para un edge, aun no aplicado a ejecucion."""
+
+    __tablename__ = "edge_weights"
+
+    edge_name: Mapped[str] = mapped_column(
+        String(40), ForeignKey("edge_performance.edge_name", ondelete="CASCADE"), primary_key=True
+    )
+    raw_score: Mapped[Decimal] = mapped_column(Numeric(20, 6), default=Decimal("0"))
+    weight: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0.05"))
+    profit_factor: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    expectancy: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    sharpe: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    stability_score: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    rolling_30d_score: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    rolling_100_trades_score: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LearningSnapshot(Base):
+    """Snapshot historico del learning loop estadistico."""
+
+    __tablename__ = "learning_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="ok", index=True)
+    edges_evaluated: Mapped[int] = mapped_column(BigInteger, default=0)
+    weights_updated: Mapped[int] = mapped_column(BigInteger, default=0)
+    report_json: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 class PaperPosition(Base):

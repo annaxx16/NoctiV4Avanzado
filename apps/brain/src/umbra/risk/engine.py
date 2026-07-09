@@ -40,7 +40,6 @@ from umbra.risk.sizer import SizingResult
 log = get_logger("umbra.risk")
 
 KILL_SWITCH_KEY = "umbra:halt"
-HALT_REASON_KEY = "umbra:halt:reason"
 
 
 @dataclass(frozen=True)
@@ -73,25 +72,13 @@ async def is_halted() -> bool:
         return fail_closed
 
 
-async def halt_reason() -> str | None:
-    redis = get_redis()
-    try:
-        return await redis.get(HALT_REASON_KEY)
-    except Exception as exc:
-        log.warning("risk.halt_reason_read_failed", error=repr(exc))
-        return None
-
-
-async def set_halt(active: bool, reason: str | None = None) -> None:
+async def set_halt(active: bool) -> None:
     redis = get_redis()
     try:
         if active:
             await redis.set(KILL_SWITCH_KEY, "1")
-            if reason is not None:
-                await redis.set(HALT_REASON_KEY, reason)
         else:
             await redis.delete(KILL_SWITCH_KEY)
-            await redis.delete(HALT_REASON_KEY)
     except Exception as exc:
         log.error("risk.set_halt_failed", error=repr(exc), active=active)
         raise
@@ -195,7 +182,7 @@ async def check(
     dd_pct = await current_drawdown_pct(session)  # típicamente negativo
     if dd_pct <= -settings.dd_halt_pct:
         # Auto-halt al detectar DD severo. Otra task del supervisor flatten-ea.
-        await set_halt(True, reason="auto_dd")
+        await set_halt(True)
         return RiskDecision(
             False,
             f"auto_halt_dd {dd_pct:.4f} <= -{settings.dd_halt_pct}",

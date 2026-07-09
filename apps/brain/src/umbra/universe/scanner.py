@@ -1,4 +1,4 @@
-"""Universe scanner: descarga top mercados de Gamma, filtra por liquidez/volumen,
+﻿"""Universe scanner: descarga top mercados de Gamma, filtra por liquidez/volumen,
 y upserta a la tabla `markets_active`.
 
 Idempotente — corre en loop con scanner_loop().

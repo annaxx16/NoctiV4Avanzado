@@ -8,7 +8,15 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, select
 
-from umbra.db.models import BookSnapshot, Market, PaperFill, PaperPosition, Signal
+from umbra.config import settings
+from umbra.db.models import (
+    BookSnapshot,
+    Market,
+    PaperFill,
+    PaperPosition,
+    Signal,
+    SignalAudit,
+)
 from umbra.db.session import get_sessionmaker
 from umbra.engine.orchestrator import evaluate_market
 
@@ -16,6 +24,7 @@ TEST_CID = "0xtest_paper_e2e_synthetic"
 
 
 async def _cleanup(session) -> None:
+    await session.execute(delete(SignalAudit).where(SignalAudit.market_id == TEST_CID))
     await session.execute(delete(PaperFill).where(PaperFill.market_id == TEST_CID))
     await session.execute(
         delete(PaperPosition).where(PaperPosition.market_id == TEST_CID)
@@ -88,7 +97,7 @@ async def test_signal_aceptada_genera_paper_fill_y_posicion():
         assert fill.side == "BUY_NO"
         assert float(fill.fill_price) > 0.50  # NO debería costar > 0.50 con slippage adverso
         assert float(fill.shares) > 0
-        assert float(fill.notional_usd) <= 50.01
+        assert float(fill.notional_usd) <= settings.max_risk_per_trade_usd + 0.01
 
         positions = (
             await session.execute(

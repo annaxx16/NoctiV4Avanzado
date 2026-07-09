@@ -30,7 +30,6 @@ if (-not (Test-Path $python)) {
 
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 New-Item -ItemType Directory -Path $redisDir -Force | Out-Null
-
 $env:UMBRA_API_PORT = "$ApiPort"
 
 function Get-PortOwners([int]$Port) {

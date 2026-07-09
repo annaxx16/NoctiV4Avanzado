@@ -1,7 +1,7 @@
 """Test E2E del orchestrator contra la DB real.
 
-Inyecta un Market sintético + 13 snapshots con overreaction, llama evaluate_market,
-verifica que se generó una Signal aceptada. Limpia al final.
+Inyecta un Market sintetico + 13 snapshots con overreaction, llama evaluate_market,
+verifica que se genero una Signal aceptada. Limpia al final.
 """
 
 from __future__ import annotations
@@ -10,9 +10,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
-from umbra.db.models import BookSnapshot, Market, Signal
+from umbra.config import settings
+
+from umbra.db.models import BookSnapshot, Market, Signal, SignalAudit
 from umbra.db.session import get_sessionmaker
 from umbra.engine.orchestrator import evaluate_market
 
@@ -20,6 +22,9 @@ TEST_CONDITION_ID = "0xtest_orchestrator_e2e_synthetic"
 
 
 async def _cleanup(session) -> None:
+    await session.execute(
+        delete(SignalAudit).where(SignalAudit.market_id == TEST_CONDITION_ID)
+    )
     await session.execute(delete(Signal).where(Signal.market_id == TEST_CONDITION_ID))
     await session.execute(
         delete(BookSnapshot).where(BookSnapshot.market_id == TEST_CONDITION_ID)
@@ -34,7 +39,7 @@ async def test_orchestrator_emits_accepted_signal_on_synthetic_overreaction():
     async with sm() as session:
         await _cleanup(session)
 
-        # Market sintético
+        # Market sintetico
         session.add(
             Market(
                 condition_id=TEST_CONDITION_ID,
@@ -46,7 +51,7 @@ async def test_orchestrator_emits_accepted_signal_on_synthetic_overreaction():
             )
         )
 
-        # 12 snapshots con ruido ±0.001-0.002 alrededor de 0.30
+        # 12 snapshots con ruido +/-0.001-0.002 alrededor de 0.30
         noise = [0, 0.001, -0.001, 0.002, -0.002, 0.001, -0.001, 0, 0.002, -0.001, 0.001, 0]
         now = datetime.now(UTC)
         for i, n in enumerate(noise):
@@ -64,7 +69,7 @@ async def test_orchestrator_emits_accepted_signal_on_synthetic_overreaction():
                     accepting_orders=True,
                 )
             )
-        # spike actual a 0.50 (5σ+ con ruido típico de 0.001)
+        # spike actual a 0.50 (5 sigma+ con ruido tipico de 0.001)
         session.add(
             BookSnapshot(
                 market_id=TEST_CONDITION_ID,
@@ -83,12 +88,22 @@ async def test_orchestrator_emits_accepted_signal_on_synthetic_overreaction():
         sig = await evaluate_market(session, TEST_CONDITION_ID)
         await session.commit()
 
-        assert sig is not None, "el orchestrator debe generar una señal"
-        assert sig.side == "BUY_NO", f"esperaba BUY_NO, recibí {sig.side}"
-        assert sig.accepted, f"esperaba accepted=True, razón: {sig.reason}"
+        assert sig is not None, "el orchestrator debe generar una senal"
+        assert sig.side == "BUY_NO", f"esperaba BUY_NO, recibi {sig.side}"
+        assert sig.accepted, f"esperaba accepted=True, razon: {sig.reason}"
         assert sig.notional_usd is not None and sig.notional_usd > 0
-        assert sig.notional_usd <= Decimal("50.01"), (
-            "max_risk_per_trade_usd debería capear a ~$50"
+        assert sig.notional_usd <= Decimal(str(settings.max_risk_per_trade_usd + 0.01)), (
+            "max_risk_per_trade_usd deberia capear al valor configurado"
         )
+        audit = (
+            await session.execute(
+                select(SignalAudit).where(SignalAudit.signal_id == sig.id)
+            )
+        ).scalar_one()
+        assert audit.accepted is True
+        assert audit.rejected is False
+        assert audit.edge_name == "overreaction_v1"
+        assert audit.direction == "BUY_NO"
+        assert audit.rejected_reason is None
 
         await _cleanup(session)

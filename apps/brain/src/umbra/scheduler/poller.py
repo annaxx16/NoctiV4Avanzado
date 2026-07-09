@@ -1,4 +1,4 @@
-"""Poller: cada N segundos, para cada mercado del universo persiste un snapshot
+﻿"""Poller: cada N segundos, para cada mercado del universo persiste un snapshot
 en book_snapshots y evalúa la señal.
 
 Dos fuentes, y no se sustituyen: se complementan.

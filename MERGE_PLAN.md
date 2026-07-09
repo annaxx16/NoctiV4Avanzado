@@ -6,6 +6,38 @@ Bot1 sigue operando como hoy, sin tocar, hasta el final de la Fase 3.
 
 ---
 
+## 0. Cuál es el brain, y por qué
+
+Había **dos** umbraNocti en el disco, y no eran la misma cosa:
+
+- `Nocti/NoctiV2/UmbraNoiti` — el que **generó los datos**. Su capa `analytics/`
+  (pesos de edge, rendimiento por edge, auditoría de señales) más su `learning_loop.py`
+  llevaron la base de datos hasta la revisión de Alembic `7a8b9c0d1e2f`.
+- `Nocti/NoctiV3/UmbraNoiti` — el mismo repo, un commit por delante (`d9053d8`), pero
+  **sin la capa de aprendizaje**: la perdió porque en V2 nunca se commiteó. A cambio
+  añadió el paquete `research/` (régimen, drawdown, sintéticos) y el despliegue Docker.
+
+La base de datos manda. Estaba en `7a8b9c0d1e2f`, una revisión que **no existe en V3**:
+`alembic upgrade head` habría fallado con *"Can't locate revision"*. Y las tablas que
+solo conoce V2 tienen datos reales — `signal_audit` 1.029 filas, `trade_outcomes` 783,
+`learning_snapshots` 30.
+
+**`apps/brain` = el árbol de trabajo de V2, más el `research/` y el Docker de V3.**
+
+Suerte que ayudó: `book_cache.py`, `poller.py` y `config.py` —los tres ficheros que toca
+la Fase 1— son **idénticos** en V2 y V3. `scanner.py` solo difería en acentos. Reaplicar
+la Fase 1 sobre V2 fue mecánico.
+
+Queda una tensión sin resolver, y es del dueño del proyecto: `ROADMAP.md` y `STRATEGY.md`
+prohíben meter ML hasta validar el edge, y la capa de pesos adaptativos de `analytics/`
+es exactamente eso. Se conserva porque tiene datos y porque tirarla es irreversible, no
+porque encaje con la disciplina escrita.
+
+Copia intacta del árbol de V2, incluida la `analytics/` sin trackear:
+`C:\Users\santi\_backup_umbra_v2_worktree`.
+
+---
+
 ## 1. Por qué esta forma
 
 Bot1 tiene lo que a Umbra le falta (firma, CLOB, WebSocket, CTF on-chain) y le falta

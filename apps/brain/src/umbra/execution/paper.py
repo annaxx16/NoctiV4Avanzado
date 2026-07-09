@@ -20,6 +20,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from umbra.analytics.trade_outcomes import record_trade_outcome
 from umbra.config import settings
 from umbra.db.models import PaperFill, PaperPosition, Signal
 from umbra.logging import get_logger
@@ -321,6 +322,7 @@ async def execute_close(
     proceeds = shares_to_close * close_price
     fees = proceeds * (settings.fee_bps / 10_000.0)
     proceeds_net = proceeds - fees
+    cost_basis_released = Decimal(str(shares_to_close)) * position.avg_entry_price
 
     now = datetime.now(UTC)
     fill = PaperFill(
@@ -349,6 +351,25 @@ async def execute_close(
         now=now,
     )
     fill.realized_pnl_usd = realized
+    await record_trade_outcome(
+        session,
+        close_fill=fill,
+        position=position,
+        cost_basis_released=cost_basis_released,
+        realized_pnl=realized,
+        exit_reason=reason,
+        market_conditions={
+            "current_mid_yes": current_mid_yes,
+            "liquidity_usd": liquidity_usd,
+            "fraction": fraction,
+            "shares_closed": shares_to_close,
+            "proceeds_gross_usd": proceeds,
+            "proceeds_net_usd": proceeds_net,
+            "cost_basis_released_usd": float(cost_basis_released),
+            "slippage_bps": bps,
+            "at_resolution": at_resolution,
+        },
+    )
 
     log.info(
         "paper.close",

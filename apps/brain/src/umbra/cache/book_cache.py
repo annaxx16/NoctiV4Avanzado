@@ -1,4 +1,4 @@
-"""Hot cache del último book por mercado.
+﻿"""Hot cache del último book por mercado.
 
 Clave: book:{condition_id}
 TTL: 60s (configurable). Si pasa más sin update, se considera stale.

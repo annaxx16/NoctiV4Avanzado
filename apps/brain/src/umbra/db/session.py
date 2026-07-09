@@ -26,7 +26,7 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             settings.database_url,
             pool_pre_ping=True,
-            pool_size=5,
+            pool_size=10,
             max_overflow=5,
             echo=False,
             connect_args={"connect_timeout": 30},

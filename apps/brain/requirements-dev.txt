@@ -4,6 +4,7 @@
 ruff==0.7.4
 mypy==1.13.0
 
-# greenlet vive en requirements.txt (3.5.1). Fijarlo aquí a otra versión hacía
+# greenlet vive en requirements.txt (3.5.1), que es el único fichero que instala
+# el Dockerfile de producción. Fijarlo aquí a otra versión hacía
 # `pip install -r requirements-dev.txt` irresoluble, porque este fichero hace
-# `-r requirements.txt` en la primera línea.
+# `-r requirements.txt` en su primera línea.

@@ -16,6 +16,7 @@ import asyncio
 from umbra.logging import get_logger
 from umbra.scheduler.equity_loop import equity_loop
 from umbra.scheduler.exit_loop import exit_loop
+from umbra.scheduler.learning_loop import learning_loop
 from umbra.scheduler.ohlc_loop import ohlc_loop
 from umbra.scheduler.outcomes_loop import outcomes_loop
 from umbra.scheduler.poller import poller_loop
@@ -40,6 +41,7 @@ class BackgroundTasks:
             asyncio.create_task(outcomes_loop(self._stop), name="outcomes_loop"),
             asyncio.create_task(supervisor_loop(self._stop), name="supervisor"),
             asyncio.create_task(ohlc_loop(self._stop), name="ohlc_loop"),
+            asyncio.create_task(learning_loop(self._stop), name="learning_loop"),
         ]
         log.info("background.started", n=len(self._tasks))
 

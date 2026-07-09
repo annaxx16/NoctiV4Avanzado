@@ -73,7 +73,7 @@ function Start-RedisIfNeeded() {
         Start-Sleep -Seconds 1
     }
     if ((Get-PortOwners $redisPort).Count -eq 0) {
-        Write-WatchdogLog "Redis no se inicio en tiempo."
+        Write-WatchdogLog "Redis no se inicio en tiempo." 
     }
 }
 
@@ -99,7 +99,7 @@ function Start-ApiIfNeeded() {
         Write-WatchdogLog "API en puerto $ApiPort no responde bien; cerrando PID $owner."
         Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
     }
-
+    
     if ($owners.Count -gt 0) {
         Write-WatchdogLog "Esperando a que se libere el puerto $ApiPort..."
         Start-Sleep -Seconds 3

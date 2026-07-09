@@ -1,4 +1,4 @@
-"""Fase 1: el book de exec (WebSocket) y su mezcla con el de Gamma (REST).
+﻿"""Fase 1: el book de exec (WebSocket) y su mezcla con el de Gamma (REST).
 
 Todo aquí es lógica pura: ni Redis ni Postgres. Lo que se prueba es el contrato,
 que es donde se rompen las fusiones.

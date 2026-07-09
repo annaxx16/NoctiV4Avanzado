@@ -4,11 +4,12 @@ __pycache__/
 .venv/
 venv/
 .env
-.env.prod
-.env.*.local
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 *.parquet
 *.duckdb
 .DS_Store
+.redis/
+logs/
+dump.rdb
