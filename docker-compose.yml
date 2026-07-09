@@ -1,13 +1,30 @@
 # Nocti — cerebro (brain, Python) + brazo (exec, Node), sobre Postgres y Redis.
 #
-#   docker compose up -d              → los 4 servicios core
-#   docker compose --profile ui up -d → + los dos dashboards
+#   docker compose up -d               → solo Redis (el bus). Es lo mínimo.
+#   docker compose --profile app up -d → + brain, exec y el dashboard Streamlit
+#   docker compose --profile db  up -d → + un Postgres vacío en el 5434
+#
+# Postgres NO arranca por defecto. El histórico de `book_snapshots` vive en el
+# PostgreSQL 18 de la máquina, y ese histórico es lo que alimenta el veredicto
+# go/no-go. Un contenedor nuevo te daría una base vacía y ninguna advertencia.
 #
 # Todo bindeado a 127.0.0.1: nada de esto debe ser alcanzable desde fuera.
 # Para verlo en remoto, túnel SSH:  ssh -L 8000:localhost:8000 usuario@host
 
 services:
+  # Postgres en contenedor, bajo perfil `db`: NO arranca por defecto.
+  #
+  #   docker compose --profile db up -d
+  #
+  # Por defecto brain usa el PostgreSQL 18 que ya corre en esta máquina, porque
+  # ahí vive el histórico de `book_snapshots` acumulado — el que hace falta para
+  # el veredicto go/no-go. Arrancar este contenedor te da una base vacía.
+  #
+  # Se expone en el 5434 y no en el 5432 a propósito: el 5432 lo tiene PG18 y el
+  # 5433 PG15. Chocar de puertos aquí sería un rato perdido buscando por qué la
+  # migración de Alembic se aplicó "en la base equivocada".
   postgres:
+    profiles: ["db"]
     image: postgres:16-alpine
     container_name: nocti_postgres
     restart: unless-stopped
@@ -16,7 +33,7 @@ services:
       POSTGRES_PASSWORD: umbra_dev
       POSTGRES_DB: umbra
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - nocti_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -47,6 +64,7 @@ services:
   # BRAIN — decide QUÉ y CUÁNTO. Nunca toca una clave privada.
   # ------------------------------------------------------------------
   brain:
+    profiles: ["app"]
     build: ./apps/brain
     image: nocti-brain
     container_name: nocti_brain
@@ -55,15 +73,18 @@ services:
       - path: .env
         required: false
     environment:
-      # Dentro de la red de compose la infra se resuelve por nombre de servicio.
-      # Esto pisa cualquier localhost que quede en .env.
-      DATABASE_URL: postgresql+psycopg://umbra:umbra_dev@postgres:5432/umbra
+      # Redis se resuelve por nombre de servicio dentro de la red de compose.
       REDIS_URL: redis://redis:6379/0
+      # Postgres, en cambio, vive FUERA de compose por defecto: es el PG18 de la
+      # máquina, con el histórico. `host.docker.internal` es cómo un contenedor
+      # alcanza al host en Docker Desktop.
+      # Si arrancas el perfil `db`, cambia esto a  ...@postgres:5432/umbra
+      DATABASE_URL: ${DATABASE_URL_IN_DOCKER:-postgresql+psycopg://umbra:umbra_dev@host.docker.internal:5432/umbra}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -81,6 +102,7 @@ services:
   # la contabilidad y le pasa el universo de mercados por Redis.
   # ------------------------------------------------------------------
   exec:
+    profiles: ["app"]
     build: ./apps/exec
     image: nocti-exec
     container_name: nocti_exec
@@ -105,8 +127,9 @@ services:
   # ------------------------------------------------------------------
   # UI — perfil opcional. `docker compose --profile ui up -d`
   # ------------------------------------------------------------------
+  # Depende de que brain esté sano, así que vive en el mismo perfil que brain.
   brain-dashboard:
-    profiles: ["ui"]
+    profiles: ["app"]
     build: ./apps/brain
     image: nocti-brain
     container_name: nocti_brain_dashboard
