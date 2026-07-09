@@ -2,10 +2,18 @@
 
 SQLAlchemy 2.0 + psycopg 3 funciona en sync sin cambios al URL prefix
 (`postgresql+psycopg://`). Para migraciones no necesitamos async.
+
+`UMBRA_TEST_DATABASE_URL` manda sobre `settings.database_url`. Sin esto, la receta
+que documenta `docker-compose.yml` —exportar `UMBRA_TEST_DATABASE_URL` y correr
+`alembic upgrade head`— **migraba la base de producción**: esa variable solo la
+leía `tests/conftest.py`, y Alembic no importa conftest. Es el mismo fallo que
+llevó a los tests a escribir 31 `book_snapshots` en la serie histórica real, con
+otro disfraz.
 """
 
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -22,7 +30,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.database_url)
+_target_url = os.environ.get("UMBRA_TEST_DATABASE_URL") or settings.database_url
+config.set_main_option("sqlalchemy.url", _target_url)
 
 target_metadata = Base.metadata
 
