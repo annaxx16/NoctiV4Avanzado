@@ -25,6 +25,7 @@
  */
 
 import 'dotenv/config';
+import Redis from 'ioredis';
 import {
   PolymarketSDK,
   ArbitrageService,
@@ -34,6 +35,10 @@ import {
   type SmartMoneyLeaderboardEntry,
   type BinanceKLine,
 } from './src/index.js';
+import { RiskGuard } from './src/risk/guard.js';
+import { RiskStore } from './src/risk/store.js';
+import { riskView } from './src/risk/view.js';
+import type { RiskLimits } from './src/risk/state.js';
 
 // ============================================================================
 // CONFIGURATION
@@ -259,126 +264,59 @@ function log(level: string, message: string, data?: unknown) {
   if (data) console.log(JSON.stringify(data, null, 2));
 }
 
-// 🔴 FIXED: Comprehensive risk management with multiple layers
-function canTrade(): boolean {
-  // Check if permanently halted
-  if (state.permanentlyHalted) {
-    log('ERROR', '🛑 Trading permanently halted - total loss limit reached');
-    return false;
-  }
+// ============================================================================
+// RIESGO
+// ============================================================================
+//
+// Las cuatro capas viven en src/risk/. Antes estaban aquí, copy-pasteadas en
+// bot-with-dashboard.ts con diferencias sutiles, y sobre un `state` en memoria
+// que un restart borraba: el halt permanente del 40% duraba lo que durase el
+// proceso. Ahora el estado se persiste en Redis y los campos de `state` de abajo
+// son una vista de solo lectura, refrescada por `syncRisk()`.
 
-  // Reset daily PnL if new day
-  const daysSinceReset = (Date.now() - state.lastDailyReset) / (1000 * 60 * 60 * 24);
-  if (daysSinceReset >= 1) {
-    log('INFO', `Daily PnL reset. Previous day: $${state.dailyPnL.toFixed(2)}`);
-    state.dailyPnL = 0;
-    state.lastDailyReset = Date.now();
-  }
+const RISK_LIMITS: RiskLimits = {
+  capitalUsd: CONFIG.capital.totalUsd,
+  dailyMaxLossPct: CONFIG.risk.dailyMaxLossPct,
+  monthlyMaxLossPct: CONFIG.risk.monthlyMaxLossPct,
+  maxDrawdownFromPeak: CONFIG.risk.maxDrawdownFromPeak,
+  totalMaxLossPct: CONFIG.risk.totalMaxLossPct,
+  pauseOnBreachMinutes: CONFIG.risk.pauseOnBreachMinutes,
+};
 
-  // Reset monthly PnL if new month
-  const daysSinceMonthStart = (Date.now() - state.monthStartTime) / (1000 * 60 * 60 * 24);
-  if (daysSinceMonthStart >= 30) {
-    log('INFO', `Monthly PnL reset. Previous month: $${state.monthlyPnL.toFixed(2)}`);
-    state.monthlyPnL = 0;
-    state.monthStartTime = Date.now();
-  }
+let risk: RiskGuard;
 
-  // Update current capital and drawdown
-  state.currentCapital = CONFIG.capital.totalUsd + state.totalPnL;
-  if (state.currentCapital > state.peakCapital) {
-    state.peakCapital = state.currentCapital;
-  }
-  state.currentDrawdown = (state.peakCapital - state.currentCapital) / state.peakCapital;
-
-  // Check temporary pause
-  if (state.isPaused && Date.now() < state.pauseUntil) return false;
-  if (state.isPaused && Date.now() >= state.pauseUntil) {
-    state.isPaused = false;
-    log('INFO', 'Bot resumed after cooldown');
-  }
-
-  // 🔴 Layer 1: Daily loss limit
-  const dailyLossLimit = CONFIG.capital.totalUsd * CONFIG.risk.dailyMaxLossPct;
-  if (state.dailyPnL <= -dailyLossLimit) {
-    state.isPaused = true;
-    state.pauseUntil = Date.now() + CONFIG.risk.pauseOnBreachMinutes * 60 * 1000;
-    log('WARN', `Daily loss limit breached: -$${Math.abs(state.dailyPnL).toFixed(2)} (limit: $${dailyLossLimit.toFixed(2)})`);
-    log('WARN', `Bot paused for ${CONFIG.risk.pauseOnBreachMinutes} minutes`);
-    return false;
-  }
-
-  // 🔴 Layer 2: Monthly loss limit (NEW)
-  const monthlyLossLimit = CONFIG.capital.totalUsd * CONFIG.risk.monthlyMaxLossPct;
-  if (state.monthlyPnL <= -monthlyLossLimit) {
-    log('ERROR', `🛑 Monthly loss limit breached: -$${Math.abs(state.monthlyPnL).toFixed(2)} (limit: $${monthlyLossLimit.toFixed(2)})`);
-    log('ERROR', 'Trading paused until next month');
-    state.isPaused = true;
-    state.pauseUntil = Date.now() + (30 * 24 * 60 * 60 * 1000);  // Pause for 30 days
-    return false;
-  }
-
-  // 🔴 Layer 3: Drawdown from peak (NEW)
-  if (state.currentDrawdown >= CONFIG.risk.maxDrawdownFromPeak) {
-    log('ERROR', `🛑 Maximum drawdown reached: ${(state.currentDrawdown * 100).toFixed(1)}% (limit: ${(CONFIG.risk.maxDrawdownFromPeak * 100).toFixed(1)}%)`);
-    log('ERROR', `Peak: $${state.peakCapital.toFixed(2)} → Current: $${state.currentCapital.toFixed(2)}`);
-    state.isPaused = true;
-    state.pauseUntil = Date.now() + (7 * 24 * 60 * 60 * 1000);  // Pause for 7 days
-    return false;
-  }
-
-  // 🔴 Layer 4: Total loss limit - PERMANENT HALT (NEW)
-  const totalLossLimit = CONFIG.capital.totalUsd * CONFIG.risk.totalMaxLossPct;
-  if (state.totalPnL <= -totalLossLimit) {
-    state.permanentlyHalted = true;
-    log('ERROR', '💀 TOTAL LOSS LIMIT REACHED - TRADING PERMANENTLY HALTED');
-    log('ERROR', `Total loss: -$${Math.abs(state.totalPnL).toFixed(2)} (limit: $${totalLossLimit.toFixed(2)})`);
-    log('ERROR', 'Please review strategy before restarting with new capital');
-    return false;
-  }
-
-  return true;
+/** Copia el estado del guardián a `state`, que solo existe para pintarlo. */
+function syncRisk() {
+  Object.assign(state, riskView(risk.snapshot, RISK_LIMITS, Date.now()));
 }
 
-// 🔴 FIXED: Enhanced trade recording with win tracking
-function recordTrade(profit: number, strategy: string) {
-  state.tradesExecuted++;
-  state.dailyPnL += profit;
-  state.monthlyPnL += profit;  // NEW
-  state.totalPnL += profit;
-
-  // Track consecutive wins/losses
-  if (profit < 0) {
-    state.consecutiveLosses++;
-    state.consecutiveWins = 0;
-  } else {
-    state.consecutiveLosses = 0;
-    state.consecutiveWins++;
-  }
-
-  if (strategy === 'smartMoney') state.smartMoneyTrades++;
-  else if (strategy === 'arbitrage') state.arbTrades++;
-  else if (strategy === 'dipArb') state.dipArbTrades++;
-  else if (strategy === 'direct') state.directTrades++;
+async function canTrade(): Promise<boolean> {
+  const allowed = await risk.canTrade();
+  syncRisk();
+  return allowed;
 }
 
 // 🔴 NEW: Dynamic position sizing based on performance
 function calculatePositionSize(baseSize: number): number {
   if (!CONFIG.risk.enableDynamicSizing) return baseSize;
 
+  // Directo del guardián, no de la vista: estas dos rachas deciden cuánto dinero
+  // se arriesga, y una vista puede estar un tick desactualizada.
+  const { consecutiveLosses, consecutiveWins } = risk.snapshot;
   let size = baseSize;
 
   // Reduce during losing streaks
-  if (state.consecutiveLosses > 2) {
-    const reduction = Math.pow(1 - CONFIG.risk.lossSizingReduction, state.consecutiveLosses - 2);
+  if (consecutiveLosses > 2) {
+    const reduction = Math.pow(1 - CONFIG.risk.lossSizingReduction, consecutiveLosses - 2);
     size *= reduction;
     if (CONFIG.risk.minPositionPct && size < CONFIG.risk.minPositionPct) {
-      log('WARN', `Position size reduced to minimum ${(CONFIG.risk.minPositionPct * 100).toFixed(1)}% due to ${state.consecutiveLosses} consecutive losses`);
+      log('WARN', `Position size reduced to minimum ${(CONFIG.risk.minPositionPct * 100).toFixed(1)}% due to ${consecutiveLosses} consecutive losses`);
     }
   }
 
   // Increase slightly during winning streaks (capped)
-  if (state.consecutiveWins > 3) {
-    const increase = 1 + (Math.min(state.consecutiveWins - 3, 5) * CONFIG.risk.winSizingIncrease);
+  if (consecutiveWins > 3) {
+    const increase = 1 + (Math.min(consecutiveWins - 3, 5) * CONFIG.risk.winSizingIncrease);
     size *= increase;
   }
 
@@ -485,10 +423,12 @@ async function setupSmartMoney(sdk: PolymarketSDK) {
       minTradeSize: CONFIG.smartMoney.minTradeSize,
       delay: CONFIG.smartMoney.delay,
       dryRun: false,
-      onTrade: (trade, result) => {
+      onTrade: async (trade, result) => {
         if (result.success) {
           log('TRADE', `Copied ${trade.side} from ${trade.traderAddress.slice(0, 8)}...`);
-          recordTrade(0, 'smartMoney');
+          // Abrimos una posición. El PnL no existe hasta cerrarla.
+          await risk.recordOpen('smartMoney');
+          syncRisk();
         }
       },
       onError: (err) => log('ERROR', `Copy error: ${err.message}`),
@@ -520,11 +460,13 @@ async function setupArbitrage(sdk: PolymarketSDK) {
     log('ARB', `🎯 ${opp.type.toUpperCase()} +${opp.profitPercent.toFixed(2)}%`);
   });
 
-  arbService.on('execution', (result) => {
+  arbService.on('execution', async (result) => {
     if (result.success) {
       state.arbProfit += result.profit;
       log('TRADE', `Arb executed: +$${result.profit.toFixed(2)}`);
-      recordTrade(result.profit, 'arbitrage');
+      // El arbitraje abre y cierra en el mismo acto: aquí sí hay PnL realizado.
+      await risk.recordRoundTrip(result.profit, 'arbitrage');
+      syncRisk();
     }
   });
 
@@ -554,10 +496,12 @@ async function setupDipArb(sdk: PolymarketSDK) {
   });
 
   sdk.dipArb.on('signal', (s) => log('SIGNAL', `DipArb: ${s.type} ${s.side}`));
-  sdk.dipArb.on('execution', (r) => {
+  sdk.dipArb.on('execution', async (r) => {
     if (r.success) {
       log('TRADE', `DipArb ${r.leg}: ${r.side}`);
-      recordTrade(0, 'dipArb');
+      // Una pata ejecutada es una apertura, no un resultado.
+      await risk.recordOpen('dipArb');
+      syncRisk();
     }
   });
   sdk.dipArb.on('rotate', (e) => {
@@ -771,7 +715,7 @@ async function setupDirectTrading(sdk: PolymarketSDK) {
   log('INFO', 'Direct trading enabled - will place orders based on trend analysis');
 
   async function checkTrendTrades() {
-    if (!canTrade()) return;
+    if (!(await canTrade())) return;
 
     const trendingMarkets = await sdk.gammaApi.getTrendingMarkets(5);
 
@@ -813,6 +757,7 @@ async function setupDirectTrading(sdk: PolymarketSDK) {
 // ============================================================================
 
 function displayStatus() {
+  syncRisk();
   const runtime = Math.round((Date.now() - state.startTime) / 1000 / 60);
 
   console.log('\n' + '═'.repeat(80));
@@ -877,6 +822,29 @@ async function main() {
     log('ERROR', 'POLYMARKET_PRIVATE_KEY not found');
     process.exit(1);
   }
+
+  // El estado de riesgo se carga antes que nada. Si Redis no responde no sabemos
+  // si el halt permanente estaba puesto, y arrancar a operar a ciegas es
+  // exactamente el fallo que la Fase 2 viene a cerrar.
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379/0', {
+    maxRetriesPerRequest: null,
+  });
+  redis.on('error', (err) => log('ERROR', `Redis: ${err.message}`));
+  try {
+    risk = await RiskGuard.boot({
+      store: new RiskStore(redis),
+      limits: RISK_LIMITS,
+      logger: {
+        info: (m) => log('INFO', m),
+        warn: (m) => log('WARN', m),
+        error: (m) => log('ERROR', m),
+      },
+    });
+  } catch (err) {
+    log('ERROR', `No arranco: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  syncRisk();
 
   log('INFO', 'Configuration', {
     capital: `$${CONFIG.capital.totalUsd}`,

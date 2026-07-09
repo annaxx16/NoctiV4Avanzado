@@ -254,41 +254,66 @@ y `skippedCrossed` se mantiene marginal frente a `published`.
 
 ### Fase 2 — Contabilidad unificada (semana 1-2)
 
-**Contradicción pendiente de resolver.** Este plan decía "migrar el estado de riesgo de
-`exec` a Postgres". Luego la Fase 1 estableció que **`exec` no habla con Postgres**. Las dos
-cosas no pueden ser verdad. Tres salidas:
+**Contradicción resuelta: Redis.** Este plan decía "migrar el estado de riesgo de `exec` a
+Postgres". Luego la Fase 1 estableció que **`exec` no habla con Postgres**. Se optó por la
+salida (1) de las tres que había sobre la mesa:
 
-1. `exec` guarda su estado de riesgo en **Redis** (`nocti:exec:risk_state`), que con
+1. **[hecho]** `exec` guarda su estado de riesgo en **Redis** (`nocti:exec:risk_state`), que con
    `appendonly` sobrevive a restarts. Mantiene la regla de los dos idiomas. Redis es más
    débil que Postgres para contabilidad, pero la propiedad que necesitamos —que el halt
    permanente sobreviva al proceso— la cumple.
 2. `exec` lee y escribe su estado a través de la **API de brain**. Postgres sigue siendo la
    verdad, `exec` sigue sin credenciales de base de datos. Más correcto, más acoplado.
 3. **`exec` pierde su risk engine entero.** brain es la única autoridad, como dice la regla
-   del contrato ("un solo presupuesto de capital"). Es el destino final, pero exige que las
-   estrategias de `exec` pasen por brain, y eso es la Fase 4.
-
-Recomendación: (1) ahora, (3) en la Fase 4. Es incremental y no bloquea.
+   del contrato ("un solo presupuesto de capital"). Sigue siendo el destino final, en la
+   Fase 4. Cuando llegue, `src/risk/` de `exec` se borra entero.
 
 Aquí se cierra el agujero del halt que no sobrevive a un restart.
 
-- Migrar el `state` en memoria de Bot1 a almacenamiento persistente. El halt permanente pasa
-  a sobrevivir a restarts.
-- Arreglar los `recordTrade(0, ...)`: el PnL realizado se calcula al cerrar, no al abrir.
-  `exec` reporta el fill; `brain` calcula el PnL contra la posición en `portfolio_state`.
-- Deduplicar el `CONFIG` divergente entre `bot-config.ts` y `bot-with-dashboard.ts`
-  (`canTrade()`, `recordTrade()`, `state`, `setupBinanceAnalysis` están copy-pasteados con
-  diferencias sutiles: `bot-config.ts` ignora los flags `*_ENABLED` del `.env`, y direct trading
-  ejecuta en uno y solo loguea en el otro, `bot-config.ts:801`).
-- Bugs concretos a matar de paso: `setInterval` registrado dos veces en `bot-with-dashboard.ts:868`
-  (doble llamada a la API de Binance); el toggle de dry-run que reasigna `CONFIG.dryRun` dos veces
-  (`:1082-1091`); `getWalletProfile().winRate` accedido con `as any` (`:416`), que filtra en silencio.
-- `float → Decimal` en el camino del dinero de `brain` (`execution/paper.py`, `orchestrator.py`).
-- Tests: el risk engine de `brain` no tiene test unitario por-compuerta. Se escriben los 11.
+- **[hecho]** El `state` en memoria de Bot1 vive ahora en `apps/exec/src/risk/`: `state.ts`
+  (lógica pura), `store.ts` (Redis), `guard.ts` (write-through + fail-closed), `view.ts`
+  (proyección para el dashboard). Los dos entrypoints comparten el módulo; sus copias
+  divergidas de `canTrade()` y `recordTrade()` desaparecen.
+
+  Se persisten los **hechos** (PnL, pico, rachas) y se derivan los **veredictos**: al cargar,
+  `haltedPermanently` se recalcula contra `totalPnl`, así que una escritura rota no puede
+  perder un halt. Fail-closed en tres sitios: si Redis no responde al arrancar no se opera;
+  si una pérdida no se puede persistir la compuerta se cierra; si el estado está corrupto se
+  repara hacia el lado conservador.
+
+- **[hecho]** `recordTrade(0, ...)` era peor de lo que este plan suponía. No era solo "PnL no
+  contabilizado": el `0` caía en la rama `else` de `if (profit < 0)`, de modo que **cada
+  apertura se registraba como una victoria** — ponía `consecutiveLosses` a cero e incrementaba
+  `consecutiveWins`. Como `consecutiveLosses` es lo que encoge la posición en una mala racha
+  (`calculatePositionSize`), abrir una posición borraba la memoria de las pérdidas y el sizing
+  dinámico crecía justo cuando debía encoger. En vivo, con dinero real.
+
+  Ahora `recordOpen` (sin PnL, sin rachas) y `recordClose` (PnL realizado) son operaciones
+  distintas. `dipArb` emitía las cuatro patas del ciclo (`leg1`, `leg2`, `exit`, `merge`) por
+  el mismo camino: cuatro trades y cuatro victorias falsas por ciclo. Solo `leg1` abre.
+
+  El PnL realizado de las patas de cierre **no se contabiliza todavía**: el evento no trae las
+  shares llenadas y calcularlo en `exec` sería inventarlo. Entra por `nocti:fills` en la Fase 3,
+  calculado por `brain` contra la posición. No contabilizar es más honesto que contabilizar mal.
+
+- **[hecho]** Un doble conteo de paso: `simulateTrade(0, 'direct')` ya incrementaba
+  `state.directTrades`, y la línea siguiente lo incrementaba otra vez.
+- **[hecho]** Bugs quirúrgicos: `setInterval` registrado dos veces en `bot-with-dashboard.ts:868`
+  (doble llamada a la API de Binance); el toggle de dry-run que reasignaba `CONFIG.dryRun` dos
+  veces (`:1082-1091`); `getWalletProfile().winRate` accedido con `as any` (`:416`).
+- Queda: deduplicar el resto del `CONFIG` divergente (`setupBinanceAnalysis`; `bot-config.ts`
+  ignora los flags `*_ENABLED` del `.env`, y direct trading ejecuta en uno y solo loguea en el
+  otro, `bot-config.ts:801`).
+- Queda: `float → Decimal` en el camino del dinero de `brain` (`execution/paper.py`, `orchestrator.py`).
+- Queda: el risk engine de `brain` no tiene test unitario por-compuerta. Se escriben los 11.
   Es lo más crítico del sistema y es lo menos cubierto.
 
 *Aceptación:* matar el proceso de `exec` a mitad de sesión y comprobar que al reiniciar conserva
 `peak_capital`, `daily_pnl` y el estado de halt. Un test que lo demuestre. Los 11 gates cubiertos.
+
+*Estado:* la mitad de `exec` está cerrada y verificada — `src/risk/risk.test.ts` cubre las cuatro
+capas, y el criterio se comprobó además contra Redis real, matando el proceso con `SIGKILL` y
+reiniciando también el propio Redis. Faltan los 11 gates de `brain` y el `Decimal`.
 
 ### Fase 3 — Shadow execution (semana 2-3)
 
