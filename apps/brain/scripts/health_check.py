@@ -32,7 +32,7 @@ from umbra.db.models import (  # noqa: E402
     MarketActive,
     OhlcBar,
     Outcome,
-    PaperFill,
+    Fill,
     PaperPosition,
     Signal,
 )
@@ -76,7 +76,7 @@ async def main() -> int:
             (MarketActive, "markets_active"),
             (BookSnapshot, "book_snapshots"),
             (Signal, "signals"),
-            (PaperFill, "fills_paper"),
+            (Fill, "fills"),
             (PaperPosition, "portfolio_state"),
             (Outcome, "outcomes"),
             (EquitySnapshot, "equity_snapshots"),

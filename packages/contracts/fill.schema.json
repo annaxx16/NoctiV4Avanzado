@@ -47,6 +47,11 @@
       "description": "Hash on-chain si la operación tocó CTF (split/merge/redeem). Vacío en shadow."
     },
 
+    "mid_price": {
+      "type": ["string", "null"],
+      "description": "El mid del token en el instante de la foto del libro: la referencia contra la que se midió `realized_slippage_bps`. Sin él, brain guardaría un `mid_at_fill` que no vio nadie, o tendría que despejarlo de la propia bps que quiere auditar. Null si el libro no tenía dos lados."
+    },
+
     "expected_slippage_bps": {
       "type": ["integer", "null"],
       "description": "Lo que brain predijo con su modelo (execution/paper.py). Copiado del intent para que la comparación viva en la misma fila."

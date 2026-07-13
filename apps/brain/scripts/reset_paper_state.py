@@ -1,6 +1,6 @@
 """Reset del estado de paper trading.
 
-Borra: signals, fills_paper, portfolio_state, equity_snapshots.
+Borra: signals, fills, portfolio_state, equity_snapshots.
 Mantiene: markets, book_snapshots, markets_active, outcomes, ohlc_bars
           (para no perder histórico de datos ni velas ya agregadas).
 
@@ -36,12 +36,12 @@ async def main() -> None:
     async with sm() as session:
         await session.execute(
             text(
-                "TRUNCATE fills_paper, portfolio_state, equity_snapshots, signals "
+                "TRUNCATE fills, portfolio_state, equity_snapshots, signals "
                 "RESTART IDENTITY CASCADE"
             )
         )
         await session.commit()
-    print("DB reset: fills_paper, portfolio_state, equity_snapshots, signals truncated.")
+    print("DB reset: fills, portfolio_state, equity_snapshots, signals truncated.")
 
     redis = get_redis()
     try:

@@ -13,6 +13,7 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from umbra.bus.tokens import yes_token_id as bus_yes_token_id
 from umbra.cache.universe_cache import UniverseMarket, publish_universe
 from umbra.config import settings
 from umbra.db.models import Market, MarketActive
@@ -29,12 +30,11 @@ def yes_token_id(m: GammaMarket) -> str | None:
 
     Devuelve None si no hay un YES identificable: es preferible que exec no
     publique ese mercado a que publique el libro del lado equivocado.
+
+    La regla vive en `bus/tokens.py` porque el productor de intents necesita la
+    misma, y en el camino del dinero. Aquí solo se desenvuelve el `GammaMarket`.
     """
-    tokens = m.clob_token_ids or []
-    for outcome, token in zip(m.outcomes or [], tokens, strict=False):
-        if outcome.strip().lower() == "yes":
-            return token
-    return None
+    return bus_yes_token_id(m.outcomes, m.clob_token_ids)
 
 
 def to_universe_markets(candidates: list[GammaMarket]) -> list[UniverseMarket]:

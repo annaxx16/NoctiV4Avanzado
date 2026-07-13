@@ -12,11 +12,14 @@
 
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import Redis from 'ioredis';
 import { BookPublisher } from './src/bus/book-publisher.js';
+import { ClobBookSource } from './src/bus/book-source.js';
+import { IntentConsumer } from './src/bus/intent-consumer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -32,7 +35,9 @@ for (const candidate of [resolve(here, '../../.env'), resolve(here, '.env')]) {
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379/0';
 const PORT = Number(process.env.NOCTI_EXEC_PORT ?? 3001);
 const PUBLISHER_ENABLED = process.env.NOCTI_BOOK_PUBLISHER_ENABLED === 'true';
+/** `off` | `shadow`. `live` no arranca: no hay ejecutor que firme (Fase 4). */
 const EXEC_MODE = process.env.NOCTI_EXEC_MODE ?? 'off';
+const FEE_BPS = Number(process.env.NOCTI_FEE_BPS ?? 0);
 
 function log(...args: unknown[]): void {
   console.log(new Date().toISOString(), '[nocti-exec]', ...args);
@@ -41,10 +46,11 @@ function log(...args: unknown[]): void {
 async function main(): Promise<void> {
   log(`arrancando. publisher=${PUBLISHER_ENABLED ? 'on' : 'off'} exec_mode=${EXEC_MODE}`);
 
-  if (EXEC_MODE !== 'off') {
-    // El consumidor de intents es la Fase 3. Que exista la variable no significa
-    // que el camino esté escrito: fallar aquí es mejor que fingir que se ejecuta.
-    log(`NOCTI_EXEC_MODE=${EXEC_MODE} pero el consumidor de intents aún no existe (Fase 3).`);
+  if (EXEC_MODE !== 'off' && EXEC_MODE !== 'shadow') {
+    // `live` incluido. El seam `LiveExecutor` existe en `intent-consumer.ts` y
+    // nadie lo implementa: arrancar en live solo produciría rechazos. Fallar aquí
+    // es más claro que arrancar y rechazarlo todo.
+    log(`NOCTI_EXEC_MODE=${EXEC_MODE} no está soportado. Válidos: off | shadow.`);
     process.exit(1);
   }
 
@@ -65,6 +71,29 @@ async function main(): Promise<void> {
     log('publicador desactivado (NOCTI_BOOK_PUBLISHER_ENABLED != true). brain seguirá con su poller REST.');
   }
 
+  let consumer: IntentConsumer | null = null;
+  let reader: Redis | null = null;
+  if (EXEC_MODE === 'shadow') {
+    // Una conexión aparte para el `XREADGROUP` bloqueante: un `BLOCK` deja la
+    // conexión muda para todo lo demás, incluido el `XACK` de lo que acaba de leer.
+    reader = redis.duplicate();
+    reader.on('error', (err) => log('redis(reader):', err.message));
+
+    consumer = new IntentConsumer({
+      redis,
+      reader,
+      // Sin wallet. En shadow no se firma, así que exec no necesita PRIVATE_KEY.
+      bookSource: new ClobBookSource(),
+      consumerName: `${hostname()}-${process.pid}`,
+      feeBps: FEE_BPS,
+      logger: log,
+    });
+    await consumer.start();
+    log('consumidor de intents activo en shadow: cotiza contra el libro real, no firma');
+  } else {
+    log('consumidor de intents desactivado (NOCTI_EXEC_MODE != shadow)');
+  }
+
   const server = createServer((req, res) => {
     if (req.url !== '/health') {
       res.writeHead(404).end();
@@ -77,6 +106,7 @@ async function main(): Promise<void> {
         status: healthy ? 'ok' : 'degraded',
         redis: redis.status,
         publisher: PUBLISHER_ENABLED ? (publisher?.stats ?? null) : 'disabled',
+        intents: consumer?.stats ?? 'disabled',
       }),
     );
   });
@@ -89,6 +119,8 @@ async function main(): Promise<void> {
     log(`${signal}: cerrando`);
     server.close();
     await publisher?.stop();
+    await consumer?.stop();
+    await reader?.quit().catch(() => reader?.disconnect());
     await redis.quit().catch(() => redis.disconnect());
     process.exit(0);
   };

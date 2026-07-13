@@ -73,6 +73,11 @@
     "signal_id": {
       "type": ["integer", "null"],
       "description": "FK a la tabla `signals` de brain. Permite auditar qué señal originó qué fill."
+    },
+
+    "expected_slippage_bps": {
+      "type": ["integer", "null"],
+      "description": "Lo que brain predice que va a costar, con el modelo de `execution/paper.py` (base + factor·nocional/liquidez, capado). exec no lo usa para decidir nada: lo copia tal cual al fill para que el predicho y el realizado acaben en la misma fila. Es la mitad izquierda de la resta que da sentido a la Fase 3."
     }
   }
 }

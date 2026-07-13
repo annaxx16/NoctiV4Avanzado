@@ -87,7 +87,7 @@ async def _wipe_synthetic_test_state():
         async with sm() as session:
             await session.execute(
                 text(
-                    "DELETE FROM fills_paper WHERE market_id LIKE '0xtest_%' OR "
+                    "DELETE FROM fills WHERE market_id LIKE '0xtest_%' OR "
                     "signal_id IN (SELECT id FROM signals WHERE market_id LIKE '0xtest_%')"
                 )
             )

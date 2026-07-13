@@ -29,9 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from umbra.cache.redis_client import get_redis
 from umbra.config import settings
 from umbra.db.models import (
+    SHADOW_MODE,
     BookSnapshot,
+    Fill,
     Market,
-    PaperFill,
     PaperPosition,
 )
 from umbra.logging import get_logger
@@ -125,10 +126,22 @@ async def realized_pnl_total(session: AsyncSession) -> float:
 async def last_close_ts_for_market(
     session: AsyncSession, market_id: str
 ) -> datetime | None:
+    """Cuándo se cerró por última vez este mercado. Alimenta el cooldown de reentrada.
+
+    El filtro por `mode` es redundante —una fila shadow lleva `action='SHADOW'` y ya
+    no casaría con `'CLOSE'`— y está puesto a propósito. Esta consulta decide si se
+    vuelve a entrar en un mercado que se acaba de cerrar; que una fila de medición
+    pueda moverla depende hoy de una convención sobre `action` que alguien podría
+    cambiar sin pensar en esto. Aquí no depende.
+    """
     stmt = (
-        select(PaperFill.ts)
-        .where(PaperFill.market_id == market_id, PaperFill.action == "CLOSE")
-        .order_by(desc(PaperFill.ts))
+        select(Fill.ts)
+        .where(
+            Fill.market_id == market_id,
+            Fill.action == "CLOSE",
+            Fill.mode != SHADOW_MODE,
+        )
+        .order_by(desc(Fill.ts))
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()

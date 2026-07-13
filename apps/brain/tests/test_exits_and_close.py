@@ -11,9 +11,9 @@ from sqlalchemy import delete, select
 from umbra.db.models import (
     BookSnapshot,
     EquitySnapshot,
+    Fill,
     Market,
     Outcome,
-    PaperFill,
     PaperPosition,
     Signal,
     TradeOutcome,
@@ -70,7 +70,7 @@ async def _seed_snapshots_flat(session, cid: str, base: float, n: int = 12) -> N
 
 async def _cleanup(session, cid: str) -> None:
     await session.execute(delete(TradeOutcome).where(TradeOutcome.market_id == cid))
-    await session.execute(delete(PaperFill).where(PaperFill.market_id == cid))
+    await session.execute(delete(Fill).where(Fill.market_id == cid))
     await session.execute(delete(PaperPosition).where(PaperPosition.market_id == cid))
     await session.execute(delete(Signal).where(Signal.market_id == cid))
     await session.execute(delete(Outcome).where(Outcome.market_id == cid))
@@ -589,7 +589,7 @@ async def test_close_fill_reconciles_exactly_from_its_own_row():
     Antes no cerraba: `proceeds` se calculaba en float, entraba sin cuantizar, y
     Postgres lo redondeaba a 6 decimales — mientras el PnL realizado se derivaba
     del valor sin redondear. La diferencia era del orden de 1e-7 por fill, y hacía
-    imposible reconstruir la contabilidad desde `fills_paper`.
+    imposible reconstruir la contabilidad desde `fills`.
 
     Se elige un `avg_entry_price` con muchos decimales a propósito: 0.333333 * 3
     shares no es representable en binario.
@@ -636,8 +636,8 @@ async def test_close_fill_reconciles_exactly_from_its_own_row():
         # que teníamos en memoria.
         fill = (
             await session.execute(
-                select(PaperFill).where(
-                    PaperFill.market_id == cid, PaperFill.action == "CLOSE"
+                select(Fill).where(
+                    Fill.market_id == cid, Fill.action == "CLOSE"
                 )
             )
         ).scalar_one()

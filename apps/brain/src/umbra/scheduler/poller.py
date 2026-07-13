@@ -22,6 +22,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
+from umbra.bus.intents import publish_pending
 from umbra.cache.book_cache import (
     SOURCE_CLOB_WS,
     CachedBook,
@@ -213,12 +214,31 @@ async def poll_once() -> int:
                 )
         await session.commit()
 
+    # El outbox de intents se drena DESPUÉS del commit, y en su propia sesión.
+    #
+    # Antes del commit, exec podría cotizar —y algún día firmar— un intent cuya
+    # fila se revierte. Después, lo peor que pasa es que un intent se quede sin
+    # publicar, y el tick siguiente lo recoge. Ver `bus/intents.py`.
+    #
+    # El barrido no mira solo lo de este tick: arrastra también lo que quedó de un
+    # tick anterior que murió a medias, o de una caída de Redis. Por eso corre
+    # aunque este tick no haya aceptado ninguna señal.
+    intents_published = 0
+    if settings.mode == "shadow":
+        try:
+            async with sm() as session:
+                stats = await publish_pending(session)
+                intents_published = stats.published
+        except Exception as exc:
+            log.warning("poller.intents_publish_failed", error=repr(exc))
+
     log.info(
         "poller.tick",
         written=written,
         cached=cached,
         from_ws=len(ws_books),
         signals=signals_emitted,
+        intents_published=intents_published,
         universe_size=len(condition_ids),
     )
     return written

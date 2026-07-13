@@ -340,19 +340,72 @@ Se encontró y cerró, de paso, una trampa que no estaba en el plan: `alembic/en
 `UMBRA_TEST_DATABASE_URL`, así que la receta de migración documentada en `docker-compose.yml`
 apuntaba a la base de **producción**.
 
-### Fase 3 — Shadow execution (semana 2-3)
+### Fase 3 — Shadow execution (semana 2-3) — **código implementado**
 
 `brain` emite intents con `mode: shadow`. `exec` **no firma**: cotiza contra el book real y devuelve
 el fill que *habría* obtenido. Se compara contra lo que `execution/paper.py` predijo.
 
-- `exec`: consumer de `nocti:intents`, camino shadow completo (validación, dedup, cotización
-  contra book real, publicación en `nocti:fills`). El camino `live` existe pero detrás de un
-  flag que sigue apagado.
-- `brain`: consumer de `nocti:fills`, escribe a `fills` con `mode='shadow'`.
-- Reporte de divergencia: slippage predicho vs. slippage real, por estrategia y por tamaño.
+- **[hecho]** `exec`: consumer de `nocti:intents` (`src/bus/intent-consumer.ts`), camino shadow
+  completo — validación, dedup por `SET NX`, cotización caminando el libro nivel a nivel
+  (`quote.ts`, aritmética entera en `fixed.ts`), publicación en `nocti:fills`.
+
+  **Corrección al plan.** Decía *"el camino `live` existe pero detrás de un flag apagado"*. No se
+  escribió. Hay un seam (`LiveExecutor`) y ninguna implementación: un intent `live` se rechaza
+  mientras nadie inyecte un ejecutor. Escribir el código que firma meses antes de ejercitarlo es
+  la forma conocida de que la primera orden real la mande un `if` mal leído.
+
+- **[hecho]** `brain`: productor (`bus/intents.py`), consumer de `nocti:fills` (`bus/fills.py`),
+  contrato espejo en Python (`bus/contract.py`). Escribe a `fills` con `mode='shadow'` y
+  `action='SHADOW'`.
+
+- **[hecho]** Reporte de divergencia (`analytics/shadow_divergence.py`,
+  `scripts/shadow_report.py`): predicho vs. real, por estrategia y por tramo de tamaño, con
+  mediana y p90. Los `REJECTED` por exceso de slippage **cuentan** en las columnas de bps —son los
+  peores libros, y excluirlos halagaría la media— pero no en el ratio de llenado, que se calcula
+  aparte. Un slippage mediano de 20bps sobre el 30% de la orden no es una buena ejecución.
+
+Tres cosas que el plan no anticipaba y que salieron al escribirlo:
+
+- **La tabla `intents` es un outbox, no un registro.** Postgres y Redis no comparten transacción.
+  Publicar antes de commitear deja a `exec` cotizando —y en la Fase 4, **firmando**— un intent cuya
+  fila puede revertirse. Así que la fila se escribe con la señal, y `publish_pending` la envía
+  después del commit, marcando `published_at`. Si el proceso muere entre el `XADD` y esa marca, el
+  intent se reenvía. Eso hace del productor un *al menos una vez*, y lo que lo vuelve correcto es
+  exactamente la regla de idempotencia de §3.3: no es una defensa contra un bug improbable, es la
+  mitad que sostiene a la otra.
+
+- **`shadow` no es un modo del libro mayor.** `settings.mode = "shadow"` significa: el paper trading
+  sigue igual, y además se le pregunta a `exec`. Pero `paper.py` sellaba sus fills con
+  `signal.mode`, así que en shadow un paper fill nacía con `mode='shadow'` — la marca que, por
+  contrato, dice «esto no es contabilidad». `risk/engine.py:last_close_ts_for_market` filtra
+  `mode != 'shadow'`: los cierres de paper habrían desaparecido del cooldown de reentrada, y brain
+  habría reentrado en mercados que acababa de cerrar. Ahora `_ledger_mode()` traduce, y un test lo
+  fija.
+
+- **El `limit_price` no es la predicción, es la tolerancia.** Ponerlo en el precio que el modelo
+  predice cierra la compuerta justo donde el modelo dice que estará el precio: cualquier libro un
+  poco peor volvería `PARTIAL`, y en vez de medir *cuánto* se equivoca el modelo mediríamos *con
+  qué frecuencia*. El sesgo apuntaría al lado que halaga. Va en `intent_max_slippage_bps`, y quien
+  decide es la compuerta de `quote.ts`, que además conserva la medición cuando rechaza.
+
+Y una trampa que ya estaba puesta: los `condition_id` de los tests viejos (`0xtest_...`) no son hex
+de 64 caracteres, así que no pasan el contrato del bus. Los tests del bus usan uno válido y limpian
+sus propias filas.
 
 *Aceptación:* 2 semanas de shadow con volumen suficiente. Sales sabiendo, con número, **cuánto
 miente tu backtest**. Si el slippage real se come el edge de overreaction, lo sabes aquí, gratis.
+
+*Estado:* el código está escrito y probado — 276 tests en `brain`, 180 en `exec`; la migración
+`8b9c0d1e2f3a` sube y baja limpia contra Postgres. **La fase no está cumplida:** su criterio no es
+que el código corra, es tener dos semanas de muestra. No hay ni una medición todavía. Falta:
+
+1. Poner `MODE=shadow` y dejarlo correr con `exec` consumiendo `nocti:intents`.
+2. `python scripts/shadow_report.py` a los 14 días.
+3. Leer el número, y decidir sobre `overreaction` con él delante.
+
+Recordatorio, porque la tentación es real: la cotización de `exec` es **optimista**. No simula
+impacto de mercado, ni competencia por los mismos niveles, ni latencia (ver la cabecera de
+`quote.ts`). La divergencia real es **al menos** la que salga en el reporte.
 
 ---
 

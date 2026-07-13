@@ -1,4 +1,4 @@
-"""E2E: orchestrator genera Signal aceptada y se crea PaperFill + PaperPosition."""
+"""E2E: orchestrator genera Signal aceptada y se crea Fill + PaperPosition."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from sqlalchemy import delete, select
 from umbra.config import settings
 from umbra.db.models import (
     BookSnapshot,
+    Fill,
     Market,
-    PaperFill,
     PaperPosition,
     Signal,
     SignalAudit,
@@ -25,7 +25,7 @@ TEST_CID = "0xtest_paper_e2e_synthetic"
 
 async def _cleanup(session) -> None:
     await session.execute(delete(SignalAudit).where(SignalAudit.market_id == TEST_CID))
-    await session.execute(delete(PaperFill).where(PaperFill.market_id == TEST_CID))
+    await session.execute(delete(Fill).where(Fill.market_id == TEST_CID))
     await session.execute(
         delete(PaperPosition).where(PaperPosition.market_id == TEST_CID)
     )
@@ -90,7 +90,7 @@ async def test_signal_aceptada_genera_paper_fill_y_posicion():
         assert sig is not None and sig.accepted
 
         fills = (
-            await session.execute(select(PaperFill).where(PaperFill.market_id == TEST_CID))
+            await session.execute(select(Fill).where(Fill.market_id == TEST_CID))
         ).scalars().all()
         assert len(fills) == 1
         fill = fills[0]

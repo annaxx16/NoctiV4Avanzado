@@ -16,7 +16,10 @@ class Settings(BaseSettings):
     )
     redis_url: str = Field(default="redis://localhost:6379/0")
     log_level: str = Field(default="INFO")
-    mode: Literal["sim", "paper", "live"] = Field(default="sim")
+    # `shadow`: paper sigue moviendo las posiciones y, en paralelo, cada señal
+    # aceptada emite un intent al bus para que exec lo cotice contra el libro real.
+    # No se firma nada. Ver MERGE_PLAN.md §Fase 3.
+    mode: Literal["sim", "paper", "live", "shadow"] = Field(default="sim")
 
     # Admin API: token requerido para /admin/*. Si queda vacío, los endpoints
     # admin se rechazan (fail-closed) — nadie puede flatten/halt sin configurarlo.
@@ -60,6 +63,21 @@ class Settings(BaseSettings):
     slippage_size_factor_bps: float = Field(default=200.0)
     slippage_cap_bps: float = Field(default=500.0)
     fee_bps: float = Field(default=0.0)  # Polymarket cobra 0% en la mayoría de mercados hoy
+
+    # Bus de intents (Fase 3). Solo se usan cuando `mode == "shadow"`.
+    #
+    # `intent_max_slippage_bps` es la tolerancia que brain declara: exec llena
+    # caminando el libro hasta ese coste y rechaza más allá. No se ata a
+    # `slippage_cap_bps` —que es el tope del *modelo* que predice— porque son dos
+    # cosas: una es lo que creemos que costará, otra lo que aceptaríamos pagar.
+    # Un REJECTED por exceso conserva la medición, así que subir esto no
+    # «arregla» nada: solo cambia dónde cae la compuerta.
+    intent_max_slippage_bps: int = Field(default=500, ge=0, le=1000)
+    # Cuánto vive un intent en el stream. El poller tickea cada 30s; un intent que
+    # sobrevive a dos ticks está cotizando contra un libro que ya no existe.
+    intent_ttl_sec: int = Field(default=60, ge=1)
+    # Cuántos intents sin publicar drena cada barrido del outbox.
+    intent_publish_batch: int = Field(default=100, ge=1)
 
     # Exit engine
     stop_loss_pct: float = Field(default=0.15)  # cierra si pnl_pct <= -15%

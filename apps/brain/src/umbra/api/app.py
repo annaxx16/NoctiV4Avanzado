@@ -7,18 +7,18 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from umbra import __version__
-from umbra.analytics.edge_performance import latest_edge_performance
-from umbra.analytics.edge_performance import refresh_edge_performance
+from umbra.analytics.edge_performance import latest_edge_performance, refresh_edge_performance
 from umbra.analytics.edge_weights import latest_edge_weights, refresh_edge_weights
 from umbra.analytics.learning import latest_learning_snapshot, run_learning_once
 from umbra.cache.book_cache import get_book as cache_get_book
-from umbra.cache.redis_client import dispose as redis_dispose, ping as redis_ping
+from umbra.cache.redis_client import dispose as redis_dispose
+from umbra.cache.redis_client import ping as redis_ping
 from umbra.config import settings
 from umbra.db.models import (
     BookSnapshot,
+    Fill,
     Market,
     MarketActive,
-    PaperFill,
     Signal,
     SignalAudit,
     TradeOutcome,
@@ -224,17 +224,17 @@ async def signal_funnel(
     ).scalar() or 0
     trades_executed = (
         await session.execute(
-            select(func.count(PaperFill.id)).where(
-                PaperFill.ts >= since,
-                PaperFill.action == "OPEN",
+            select(func.count(Fill.id)).where(
+                Fill.ts >= since,
+                Fill.action == "OPEN",
             )
         )
     ).scalar() or 0
     trades_closed = (
         await session.execute(
-            select(func.count(PaperFill.id)).where(
-                PaperFill.ts >= since,
-                PaperFill.action == "CLOSE",
+            select(func.count(Fill.id)).where(
+                Fill.ts >= since,
+                Fill.action == "CLOSE",
             )
         )
     ).scalar() or 0
@@ -648,9 +648,9 @@ async def exits(
         raise HTTPException(status_code=400, detail="limit must be in [1, 500]")
     rows = (
         await session.execute(
-            select(PaperFill)
-            .where(PaperFill.action == "CLOSE")
-            .order_by(desc(PaperFill.ts))
+            select(Fill)
+            .where(Fill.action == "CLOSE")
+            .order_by(desc(Fill.ts))
             .limit(limit)
         )
     ).scalars().all()
@@ -681,7 +681,7 @@ async def fills(
         raise HTTPException(status_code=400, detail="limit must be in [1, 500]")
     rows = (
         await session.execute(
-            select(PaperFill).order_by(desc(PaperFill.ts)).limit(limit)
+            select(Fill).order_by(desc(Fill.ts)).limit(limit)
         )
     ).scalars().all()
     return [

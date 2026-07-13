@@ -11,6 +11,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from umbra.analytics.signal_audit import audit_signal
+from umbra.bus.intents import stage_intent
 from umbra.cache.redis_client import get_redis
 from umbra.config import settings
 from umbra.db.models import Signal
@@ -183,10 +184,16 @@ async def evaluate_market(
             notional=decision.adjusted_notional_usd,
         )
 
-        # En modos sim/paper, simulamos el fill contra el book real
-        if settings.mode in {"sim", "paper"}:
+        # En sim/paper/shadow simulamos el fill contra el book real. `shadow` no es
+        # un modo de ejecución distinto: el paper trading sigue exactamente igual,
+        # y además se le pregunta a exec qué habría dado el libro de verdad.
+        if settings.mode in {"sim", "paper", "shadow"}:
+            # Una sola liquidez para los dos. La resta de la Fase 3 compara el
+            # slippage que predijo este modelo contra el que midió exec; si cada
+            # uno partiera de una liquidez distinta, la diferencia no sería del
+            # modelo, sería de los datos de entrada.
+            liquidity = _liquidity_from_snapshots(snapshots)
             try:
-                liquidity = _liquidity_from_snapshots(snapshots)
                 await paper_execute(session, signal, liquidity_usd=liquidity)
             except Exception as exc:
                 log.warning(
@@ -195,6 +202,23 @@ async def evaluate_market(
                     signal_id=signal.id,
                     error=repr(exc),
                 )
+
+            if settings.mode == "shadow":
+                # Al outbox, no al stream: la fila se commitea con la señal y el
+                # poller la publica después. Ver `bus/intents.py`.
+                #
+                # Que esto falle no puede tumbar el paper fill que ya se escribió:
+                # el bus es un instrumento de medida colgado al lado del sistema,
+                # no un eslabón del que dependa la contabilidad.
+                try:
+                    await stage_intent(session, signal, liquidity_usd=liquidity)
+                except Exception as exc:
+                    log.warning(
+                        "intents.stage_failed",
+                        condition_id=condition_id,
+                        signal_id=signal.id,
+                        error=repr(exc),
+                    )
     else:
         log.info(
             "signal.rejected",

@@ -7,12 +7,15 @@ Loops activos:
 - equity_loop        — persiste un punto de la curva de equity real cada 60s
 - outcomes_loop      — resuelve mercados vencidos cada 1h (habilita PnL/Brier)
 - supervisor         — auto halt + flatten cuando DD se rompe
+- fills_consumer     — solo en `mode=shadow`: lee `nocti:fills` (Fase 3)
 """
 
 from __future__ import annotations
 
 import asyncio
 
+from umbra.bus.fills import FillConsumer
+from umbra.config import settings
 from umbra.logging import get_logger
 from umbra.scheduler.equity_loop import equity_loop
 from umbra.scheduler.exit_loop import exit_loop
@@ -43,6 +46,18 @@ class BackgroundTasks:
             asyncio.create_task(ohlc_loop(self._stop), name="ohlc_loop"),
             asyncio.create_task(learning_loop(self._stop), name="learning_loop"),
         ]
+
+        # El consumidor de fills solo tiene sentido si alguien produce intents, y
+        # eso solo pasa en `shadow`. Arrancarlo siempre crearía el grupo `brain`
+        # sobre `nocti:fills` en instalaciones que no usan el bus, y dejaría un
+        # consumidor leyendo un stream que nadie escribe.
+        if settings.mode == "shadow":
+            self._tasks.append(
+                asyncio.create_task(
+                    FillConsumer().run(self._stop), name="fills_consumer"
+                )
+            )
+
         log.info("background.started", n=len(self._tasks))
 
     async def stop(self) -> None:

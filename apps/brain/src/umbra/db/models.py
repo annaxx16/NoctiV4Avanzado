@@ -12,22 +12,30 @@ from decimal import Decimal
 
 from sqlalchemy import (
     ARRAY,
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from umbra.db.base import Base
+
+# Las filas de medición de la Fase 3. Llevan las dos marcas: `mode` dice de dónde
+# vienen, `action` hace que las consultas viejas —las que filtran OPEN/CLOSE— las
+# ignoren sin tener que acordarse de nada. Ver la docstring de `Fill`.
+SHADOW_MODE = "shadow"
+SHADOW_ACTION = "SHADOW"
 
 
 class Market(Base):
@@ -171,15 +179,36 @@ class SignalAudit(Base):
     )
 
 
-class PaperFill(Base):
-    """Fill simulado contra el book real (paper trading).
+class Fill(Base):
+    """Un fill. Simulado por `execution/paper.py`, cotizado por `exec`, o real.
+
+    Se llamaba `fills_paper`. El nombre mentía en cuanto entró el primer fill
+    cotizado contra el libro de verdad.
 
     `action`:
-      - 'OPEN'  → shares >  0, abre o aumenta la posición.
-      - 'CLOSE' → shares <  0, reduce o cierra. `realized_pnl_usd` distinto de 0.
+      - 'OPEN'   → shares >  0, abre o aumenta la posición.
+      - 'CLOSE'  → shares <  0, reduce o cierra. `realized_pnl_usd` distinto de 0.
+      - 'SHADOW' → no toca ninguna posición. Ver abajo.
+
+    LAS FILAS `SHADOW` NO SON CONTABILIDAD
+    --------------------------------------
+    Una fila con `mode='shadow'` es el fill que `exec` dice que el libro real
+    habría dado. Es un **instrumento de medida**, no un hecho patrimonial: no
+    mueve `portfolio_state`, no realiza PnL, y no debe entrar en ninguna suma de
+    exposición, de pérdidas ni de rachas.
+
+    Por eso llevan `action='SHADOW'` además de `mode='shadow'`. Las consultas que
+    ya existían filtran por `action IN ('OPEN','CLOSE')` y las excluyen sin que
+    nadie tenga que acordarse. `risk/engine.py` filtra además por `mode` de forma
+    explícita, porque es la que toca dinero y no quiero que dependa de un
+    descuido afortunado.
+
+    Y por eso `mid_at_fill` y `slippage_bps` son nulables desde la Fase 3: un
+    intent rechazado o expirado produce una fila terminal sin libro contra el que
+    medirse, y escribir un cero ahí sería inventarse un precio.
     """
 
-    __tablename__ = "fills_paper"
+    __tablename__ = "fills"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(
@@ -195,9 +224,9 @@ class PaperFill(Base):
     action: Mapped[str] = mapped_column(String(8), default="OPEN")
 
     shares: Mapped[Decimal] = mapped_column(Numeric(20, 6))
-    mid_at_fill: Mapped[Decimal] = mapped_column(Numeric(12, 6))
+    mid_at_fill: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
     fill_price: Mapped[Decimal] = mapped_column(Numeric(12, 6))
-    slippage_bps: Mapped[Decimal] = mapped_column(Numeric(10, 4))
+    slippage_bps: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     notional_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6))
     fees_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6), default=Decimal("0"))
     realized_pnl_usd: Mapped[Decimal] = mapped_column(
@@ -205,6 +234,98 @@ class PaperFill(Base):
     )
 
     mode: Mapped[str] = mapped_column(String(8))
+
+    # ---- Fase 3: la parte que viene del bus -------------------------------
+    # `unique`: la idempotencia de `nocti:fills` la garantiza Postgres, no el
+    # consumidor. Un fill re-emitido por exec choca aquí y se descarta.
+    intent_id: Mapped[str | None] = mapped_column(
+        PgUUID(as_uuid=False), unique=True, index=True, nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(12), default="FILLED")
+    order_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class Intent(Base):
+    """Lo que brain pidió, independientemente de lo que pasó después.
+
+    Sin esta tabla no se pueden auditar los rechazos de `exec`: un intent que
+    muere en el bus no deja rastro en `fills`, y el silencio se confunde con
+    «no hubo señal».
+
+    `side` y `action` están en el idioma de brain (`BUY_YES`/`BUY_NO`, `OPEN`/
+    `CLOSE`), no en el del contrato del bus (`BUY`/`SELL`). El bus habla de
+    tokens; brain habla de posiciones. La traducción vive aquí y solo aquí.
+    """
+
+    __tablename__ = "intents"
+
+    intent_id: Mapped[str] = mapped_column(PgUUID(as_uuid=False), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    signal_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("signals.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    market_id: Mapped[str] = mapped_column(
+        String(80), ForeignKey("markets.condition_id", ondelete="CASCADE"), index=True
+    )
+
+    strategy: Mapped[str] = mapped_column(String(20), index=True)
+    mode: Mapped[str] = mapped_column(String(8), index=True)
+    token_id: Mapped[str] = mapped_column(String(80))
+
+    # El idioma de brain.
+    side: Mapped[str] = mapped_column(String(16))
+    action: Mapped[str] = mapped_column(String(8), default="OPEN")
+
+    # El idioma del bus. Decimales como string en el cable, Numeric aquí.
+    bus_side: Mapped[str] = mapped_column(String(8))
+    size_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    limit_price: Mapped[Decimal] = mapped_column(Numeric(12, 6))
+    tif: Mapped[str] = mapped_column(String(4))
+    max_slippage_bps: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # La mitad izquierda de la resta de la Fase 3: lo que `execution/paper.py`
+    # predijo que costaría, antes de ver el libro.
+    expected_slippage_bps: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+
+    # ---- El outbox --------------------------------------------------------
+    # Nulo mientras el intent no se haya escrito en `nocti:intents`.
+    #
+    # Postgres y Redis no comparten transacción. Publicar antes de commitear deja
+    # a exec cotizando un intent cuya fila puede desaparecer; commitear y publicar
+    # después deja, si el proceso muere en medio, una fila que nadie envió. De las
+    # dos, la segunda es la recuperable: la fila está ahí, y el barrido siguiente
+    # la publica.
+    #
+    # Así que esta tabla es el outbox. `stage_intent` escribe la fila dentro de la
+    # transacción de la señal; `publish_pending` la envía después del commit y
+    # marca `published_at`. Si el proceso muere entre el XADD y esa marca, el
+    # intent se reenvía — y exec lo deduplica por `intent_id` con `SET NX`. Esa
+    # regla del contrato (§3.3) no es defensiva: es lo que hace correcta esta
+    # tabla. Entrega al menos una vez, consumo idempotente.
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Se rellenan cuando llega el fill por `nocti:fills`. Nulos = sigue en vuelo.
+    status: Mapped[str | None] = mapped_column(String(12), index=True, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("ix_intents_strategy_ts", "strategy", "ts"),
+        # El backlog del outbox: sin publicar y sin resolver. En régimen normal
+        # tiene cero filas, así que el índice parcial no pesa nada y el barrido
+        # no recorre la tabla entera.
+        Index(
+            "ix_intents_outbox",
+            "ts",
+            postgresql_where=text("published_at IS NULL AND status IS NULL"),
+        ),
+    )
 
 
 class TradeOutcome(Base):
@@ -214,7 +335,7 @@ class TradeOutcome(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     close_fill_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("fills_paper.id", ondelete="CASCADE"), unique=True, index=True
+        BigInteger, ForeignKey("fills.id", ondelete="CASCADE"), unique=True, index=True
     )
     entry_signal_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("signals.id", ondelete="SET NULL"), index=True, nullable=True

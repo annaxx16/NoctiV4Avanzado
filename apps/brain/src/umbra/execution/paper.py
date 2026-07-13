@@ -28,7 +28,7 @@ final. Dos consecuencias concretas, ambas arregladas aquí:
 
   - `proceeds` entraba a la base sin cuantizar y Postgres lo redondeaba a 6 decimales,
     mientras el PnL realizado se derivaba del valor sin redondear. La identidad
-    `realized = notional - fees - cost_basis` no cerraba en la tabla `fills_paper`.
+    `realized = notional - fees - cost_basis` no cerraba en la tabla `fills`.
 
 Todo valor se cuantiza a la escala de su columna **antes** de que nada se derive de
 él. El redondeo es adverso donde hay una dirección segura: las shares compradas
@@ -47,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from umbra.analytics.trade_outcomes import record_trade_outcome
 from umbra.config import settings
-from umbra.db.models import PaperFill, PaperPosition, Signal
+from umbra.db.models import SHADOW_MODE, Fill, PaperPosition, Signal
 from umbra.logging import get_logger
 
 log = get_logger("umbra.paper")
@@ -110,12 +110,36 @@ def _slippage_bps(
     return _q(min(base + size_factor * ratio, cap), BPS)
 
 
-def _theoretical_price(side: str, mid_yes: Decimal) -> Decimal:
+def theoretical_price(side: str, mid_yes: Decimal) -> Decimal:
+    """El precio del token que esta posición compra, sin slippage.
+
+    Comprar NO es comprar el token NO a `1 - mid_yes`, no vender el token YES.
+    Son cosas distintas con libros distintos. `bus/intents.py` necesita este
+    mismo número para poner el `limit_price` del intent, y calcularlo por su
+    cuenta sería tener la regla escrita dos veces.
+    """
     if side == "BUY_YES":
         return mid_yes
     if side == "BUY_NO":
         return _ONE - mid_yes
     raise ValueError(f"side desconocido: {side}")
+
+
+def _ledger_mode(signal_mode: str) -> str:
+    """El `mode` que le toca a un fill simulado por *este* módulo.
+
+    `shadow` es un modo del **bus**, no del libro mayor. Cuando brain corre en
+    `shadow`, el paper trading sigue exactamente igual: estos fills mueven
+    `PaperPosition`, realizan PnL y alimentan el risk engine. Son hechos
+    patrimoniales, y llamarlos `shadow` los metería en el mismo saco que las
+    filas de medición que `exec` devuelve por `nocti:fills` — filas que, por
+    contrato (`db/models.py`), no deben sumar en ninguna exposición ni racha.
+
+    `risk/engine.py:last_close_ts_for_market` filtra `mode != 'shadow'`. Sin esta
+    traducción, arrancar en modo shadow borraría los cierres de paper del cooldown
+    de reentrada, y brain reentraría en mercados que acaba de cerrar.
+    """
+    return "paper" if signal_mode == SHADOW_MODE else signal_mode
 
 
 def compute_fill_price(
@@ -130,7 +154,7 @@ def compute_fill_price(
     """
     bps = _slippage_bps(notional_usd, liquidity_usd)
     factor = _ONE + (bps / _BPS_DENOM)
-    theoretical = _theoretical_price(side, _dec(mid_yes))
+    theoretical = theoretical_price(side, _dec(mid_yes))
     # Se cuantiza antes de recortar: el clamp debe morder sobre el precio que se
     # guardará, no sobre uno que el redondeo aún puede sacar del rango.
     fill_price = _clamp(_q(theoretical * factor, PRICE), _PRICE_MIN, _PRICE_MAX)
@@ -149,7 +173,7 @@ def compute_close_price(
     """
     bps = _slippage_bps(notional_usd, liquidity_usd)
     factor = max(_ZERO, _ONE - (bps / _BPS_DENOM))
-    theoretical = _theoretical_price(side, _dec(mid_yes))
+    theoretical = theoretical_price(side, _dec(mid_yes))
     close_price = _clamp(_q(theoretical * factor, PRICE), _PRICE_MIN, _PRICE_MAX)
     return close_price, bps
 
@@ -301,7 +325,7 @@ async def execute_signal(
     fees = _q(notional * _fee_rate(), MONEY, ROUND_UP)
     now = datetime.now(UTC)
 
-    fill = PaperFill(
+    fill = Fill(
         ts=now,
         signal_id=signal.id,
         market_id=signal.market_id,
@@ -314,7 +338,7 @@ async def execute_signal(
         notional_usd=notional,
         fees_usd=fees,
         realized_pnl_usd=_ZERO,
-        mode=signal.mode,
+        mode=_ledger_mode(signal.mode),
     )
     session.add(fill)
     await session.flush()
@@ -384,7 +408,7 @@ async def execute_close(
 
     mid_yes = _dec(current_mid_yes)
     try:
-        side_value = _theoretical_price(position.side, mid_yes)
+        side_value = theoretical_price(position.side, mid_yes)
     except ValueError:
         return None
 
@@ -405,12 +429,12 @@ async def execute_close(
     proceeds_net = proceeds - fees
     cost_basis_released = _q(shares_to_close * position.avg_entry_price, MONEY)
 
-    # Exacta: los tres son múltiplos de 1e-6. Es la identidad que `fills_paper`
+    # Exacta: los tres son múltiplos de 1e-6. Es la identidad que `fills`
     # debe poder reconstruir fila a fila.
     realized = proceeds_net - cost_basis_released
 
     now = datetime.now(UTC)
-    fill = PaperFill(
+    fill = Fill(
         ts=now,
         signal_id=None,
         market_id=position.market_id,
@@ -423,7 +447,7 @@ async def execute_close(
         notional_usd=proceeds,  # lo que recibimos bruto
         fees_usd=fees,
         realized_pnl_usd=realized,
-        mode=mode or "sim",
+        mode=_ledger_mode(mode or "sim"),
     )
     session.add(fill)
     await session.flush()

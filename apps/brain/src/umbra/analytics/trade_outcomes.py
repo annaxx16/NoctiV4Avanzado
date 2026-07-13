@@ -13,22 +13,22 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from umbra.analytics.edge_performance import refresh_edge_performance
-from umbra.db.models import PaperFill, PaperPosition, Signal, TradeOutcome
+from umbra.db.models import Fill, PaperPosition, Signal, TradeOutcome
 
 
 async def _entry_context(
     session: AsyncSession, market_id: str, side: str
-) -> tuple[PaperFill | None, Signal | None]:
+) -> tuple[Fill | None, Signal | None]:
     row = (
         await session.execute(
-            select(PaperFill, Signal)
-            .outerjoin(Signal, Signal.id == PaperFill.signal_id)
+            select(Fill, Signal)
+            .outerjoin(Signal, Signal.id == Fill.signal_id)
             .where(
-                PaperFill.market_id == market_id,
-                PaperFill.side == side,
-                PaperFill.action == "OPEN",
+                Fill.market_id == market_id,
+                Fill.side == side,
+                Fill.action == "OPEN",
             )
-            .order_by(desc(PaperFill.ts))
+            .order_by(desc(Fill.ts))
             .limit(1)
         )
     ).first()
@@ -40,7 +40,7 @@ async def _entry_context(
 async def record_trade_outcome(
     session: AsyncSession,
     *,
-    close_fill: PaperFill,
+    close_fill: Fill,
     position: PaperPosition,
     cost_basis_released: Decimal,
     realized_pnl: Decimal,

@@ -9,8 +9,8 @@ from sqlalchemy import delete, select
 from umbra.analytics.edge_performance import refresh_edge_performance
 from umbra.db.models import (
     EdgePerformance,
+    Fill,
     Market,
-    PaperFill,
     Signal,
     SignalAudit,
     TradeOutcome,
@@ -25,7 +25,7 @@ async def _cleanup(session) -> None:
     await session.execute(delete(EdgePerformance).where(EdgePerformance.edge_name == EDGE))
     await session.execute(delete(TradeOutcome).where(TradeOutcome.market_id == CID))
     await session.execute(delete(SignalAudit).where(SignalAudit.market_id == CID))
-    await session.execute(delete(PaperFill).where(PaperFill.market_id == CID))
+    await session.execute(delete(Fill).where(Fill.market_id == CID))
     await session.execute(delete(Signal).where(Signal.market_id == CID))
     await session.execute(delete(Market).where(Market.condition_id == CID))
     await session.commit()
@@ -78,7 +78,7 @@ async def test_refresh_edge_performance_from_audit_and_trade_outcomes():
                 metadata_json={"test": True},
             )
         )
-        close_fill = PaperFill(
+        close_fill = Fill(
             ts=now,
             signal_id=None,
             market_id=CID,
