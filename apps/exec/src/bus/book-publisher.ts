@@ -14,8 +14,9 @@
  */
 
 import type Redis from 'ioredis';
-import { RealtimeServiceV2 } from '../services/realtime-service-v2.js';
-import type { MarketSubscription, OrderbookSnapshot } from '../services/realtime-service-v2.js';
+import { ClobMarketSocket } from '../services/clob-market-socket.js';
+import type { MarketFeed, MarketSubscriptionHandle } from '../services/clob-market-socket.js';
+import type { OrderbookSnapshot } from '../services/realtime-service-v2.js';
 import {
   BOOK_TTL_SEC,
   UNIVERSE_KEY,
@@ -28,7 +29,7 @@ import {
 
 export interface BookPublisherOptions {
   redis: Redis;
-  realtime?: RealtimeServiceV2;
+  realtime?: MarketFeed;
   /** Cada cuánto se relee el universo. brain lo reescribe cada 5 min. */
   universeRefreshMs?: number;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
@@ -45,7 +46,7 @@ interface Stats {
 
 export class BookPublisher {
   private readonly redis: Redis;
-  private readonly realtime: RealtimeServiceV2;
+  private readonly realtime: MarketFeed;
   private readonly universeRefreshMs: number;
   private readonly log: Pick<Console, 'log' | 'warn' | 'error'>;
   private readonly now: () => Date;
@@ -55,7 +56,7 @@ export class BookPublisher {
   /** token_id → último precio de trade visto por el WS. */
   private lastTrade = new Map<string, number>();
 
-  private subscription: MarketSubscription | null = null;
+  private subscription: MarketSubscriptionHandle | null = null;
   private subscribedTokens: string[] = [];
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
@@ -70,7 +71,7 @@ export class BookPublisher {
 
   constructor(opts: BookPublisherOptions) {
     this.redis = opts.redis;
-    this.realtime = opts.realtime ?? new RealtimeServiceV2({ autoReconnect: true });
+    this.realtime = opts.realtime ?? new ClobMarketSocket();
     this.universeRefreshMs = opts.universeRefreshMs ?? 30_000;
     this.log = opts.logger ?? console;
     this.now = opts.now ?? (() => new Date());

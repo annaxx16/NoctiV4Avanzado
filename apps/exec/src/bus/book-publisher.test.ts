@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type Redis from 'ioredis';
-import type { RealtimeServiceV2, OrderbookSnapshot } from '../services/realtime-service-v2.js';
+import type { OrderbookSnapshot } from '../services/realtime-service-v2.js';
+import type { MarketFeed } from '../services/clob-market-socket.js';
 import { BookPublisher } from './book-publisher.js';
 import { BOOK_TTL_SEC, UNIVERSE_KEY, bookKey, type UniverseMarket } from './book.js';
 
@@ -111,7 +112,7 @@ function makePublisher() {
   const realtime = fakeRealtime();
   const pub = new BookPublisher({
     redis: redis as unknown as Redis,
-    realtime: realtime as unknown as RealtimeServiceV2,
+    realtime: realtime as unknown as MarketFeed,
     logger: silent,
     now: () => TS,
   });
