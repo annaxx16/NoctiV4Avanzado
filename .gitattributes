@@ -1,0 +1,5 @@
+# Los scripts que corren dentro de contenedores Linux DEBEN tener finales LF.
+# Sin esto, autocrlf de Windows los convierte a CRLF y el shebang falla con
+# `env: 'bash\r': No such file or directory`.
+*.sh text eol=lf
+apps/brain/docker/entrypoint.sh text eol=lf
