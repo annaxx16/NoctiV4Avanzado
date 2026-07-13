@@ -638,6 +638,12 @@ async def market_candles(
     }
 
 
+def _maybe_float(x: Any) -> float | None:
+    """`float()` que tolera NULL. Un fill de shadow rechazado no tiene precio ni
+    slippage, y desde la Fase 3 esas columnas son nulables (ver models.Fill)."""
+    return float(x) if x is not None else None
+
+
 @app.get("/exits")
 async def exits(
     limit: int = 50,
@@ -660,12 +666,12 @@ async def exits(
             "ts": f.ts.isoformat(),
             "market_id": f.market_id,
             "side": f.side,
-            "shares": float(f.shares),
-            "mid_at_fill": float(f.mid_at_fill),
-            "fill_price": float(f.fill_price),
-            "slippage_bps": float(f.slippage_bps),
-            "proceeds_usd": float(f.notional_usd),
-            "realized_pnl_usd": float(f.realized_pnl_usd),
+            "shares": _maybe_float(f.shares),
+            "mid_at_fill": _maybe_float(f.mid_at_fill),
+            "fill_price": _maybe_float(f.fill_price),
+            "slippage_bps": _maybe_float(f.slippage_bps),
+            "proceeds_usd": _maybe_float(f.notional_usd),
+            "realized_pnl_usd": _maybe_float(f.realized_pnl_usd),
             "mode": f.mode,
         }
         for f in rows
@@ -684,6 +690,9 @@ async def fills(
             select(Fill).order_by(desc(Fill.ts)).limit(limit)
         )
     ).scalars().all()
+    # Desde la Fase 3, `fills` mezcla paper fills (todas las columnas de dinero
+    # pobladas) y fills de shadow, donde un REJECTED no tiene precio ni slippage.
+    # `float(None)` tumbaba el endpoint; se serializa null y el consumidor decide.
     return [
         {
             "id": f.id,
@@ -691,12 +700,13 @@ async def fills(
             "signal_id": f.signal_id,
             "market_id": f.market_id,
             "side": f.side,
-            "shares": float(f.shares),
-            "mid_at_fill": float(f.mid_at_fill),
-            "fill_price": float(f.fill_price),
-            "slippage_bps": float(f.slippage_bps),
-            "notional_usd": float(f.notional_usd),
-            "fees_usd": float(f.fees_usd),
+            "shares": _maybe_float(f.shares),
+            "mid_at_fill": _maybe_float(f.mid_at_fill),
+            "fill_price": _maybe_float(f.fill_price),
+            "slippage_bps": _maybe_float(f.slippage_bps),
+            "notional_usd": _maybe_float(f.notional_usd),
+            "fees_usd": _maybe_float(f.fees_usd),
+            "status": f.status,
             "mode": f.mode,
         }
         for f in rows
