@@ -20,7 +20,7 @@ from functools import partial
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from umbra.backtest.engine import run_backtest
+from umbra.backtest.engine import kelly_sizer, run_backtest
 from umbra.backtest.loader import load_backtest_data
 from umbra.backtest.walk_forward import calibrate, walk_forward
 from umbra.db.session import dispose, get_sessionmaker
@@ -41,14 +41,26 @@ async def main(since_days: int, step: int) -> None:
         await dispose()
         return
 
+    # Con el sizer de producción: el veredicto §14 mira MaxDD y Sharpe, y ambas
+    # dependen del tamaño de cada apuesta. Medirlas sobre notional plano sería
+    # aprobar (o vetar) una estrategia distinta de la que corre.
     base = run_backtest(
-        markets, outcomes, partial(detect_overreaction), step_minutes=step
+        markets,
+        outcomes,
+        partial(detect_overreaction),
+        step_minutes=step,
+        sizer_fn=kelly_sizer(),
     )
     m = base.metrics
     print("\n== Parámetros de producción ==")
     print(f"trades={m.n_trades} hit={m.hit_rate:.1%} EV/señal=${m.ev_per_signal_usd:.4f}")
     print(f"PF={m.profit_factor:.2f} Sharpe={m.sharpe:.2f} MaxDD={m.max_drawdown:.1%} "
-          f"Brier={m.brier if m.brier is None else round(m.brier, 4)}")
+          f"Brier={m.brier if m.brier is None else round(m.brier, 4)} "
+          f"(sobre {m.n_predictions} predicciones)")
+    if m.n_predictions > m.n_trades:
+        vetadas = m.n_predictions - m.n_trades
+        print(f"  nota: el sizer vetó {vetadas} de {m.n_predictions} señales "
+              f"({vetadas / m.n_predictions:.0%}); el Brier las incluye igualmente")
 
     print("\n== Calibración (grid sigma × ema) ==")
     cal = calibrate(markets, outcomes, step_minutes=step)

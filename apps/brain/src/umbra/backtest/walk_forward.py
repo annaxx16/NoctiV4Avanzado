@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 
-from umbra.backtest.engine import BacktestResult, run_backtest
+from umbra.backtest.engine import BacktestResult, SizerFn, run_backtest
 from umbra.backtest.metrics import MetricsReport
 from umbra.edges.overreaction import detect as detect_overreaction
 from umbra.features.calculator import SnapshotInput
@@ -55,11 +55,20 @@ def calibrate(
     step_minutes: int = 5,
     notional_usd: float = 10.0,
     cooldown_minutes: float = 60.0,
+    sizer_fn: SizerFn | None = None,
 ) -> CalibrationResult | None:
     """Barrido en grid (sigma × ema_alpha) maximizando EV por señal.
 
     Solo considera combinaciones con al menos `min_trades` trades (evita elegir
     un threshold con 1 trade afortunado). Devuelve None si nada califica.
+
+    `sizer_fn` por defecto None (notional plano) A PROPÓSITO, aunque el veredicto
+    final sí se mide con el sizer de producción. Con notional plano, el EV por
+    señal es EV por unidad arriesgada y compara thresholds en igualdad de
+    condiciones; con Kelly, el objetivo lo dominan unas pocas apuestas grandes
+    donde el modelo estaba más confiado, que es justo donde más duele
+    sobreajustar. Seleccionar parámetros con una métrica y aceptar el sistema
+    con otra es deliberado, no un descuido.
     """
     best: CalibrationResult | None = None
     for sigma in sigma_grid:
@@ -76,6 +85,7 @@ def calibrate(
                 step_minutes=step_minutes,
                 notional_usd=notional_usd,
                 cooldown_minutes=cooldown_minutes,
+                sizer_fn=sizer_fn,
             )
             if res.metrics.n_trades < min_trades:
                 continue
@@ -95,6 +105,7 @@ def _evaluate(
     step_minutes: int,
     notional_usd: float,
     cooldown_minutes: float,
+    sizer_fn: SizerFn | None,
 ) -> BacktestResult:
     return run_backtest(
         markets,
@@ -105,6 +116,7 @@ def _evaluate(
         step_minutes=step_minutes,
         notional_usd=notional_usd,
         cooldown_minutes=cooldown_minutes,
+        sizer_fn=sizer_fn,
     )
 
 
@@ -120,6 +132,7 @@ def walk_forward(
     step_minutes: int = 5,
     notional_usd: float = 10.0,
     cooldown_minutes: float = 60.0,
+    sizer_fn: SizerFn | None = None,
 ) -> list[WalkForwardSplit]:
     """Divide la línea temporal en `n_splits` ventanas. En cada una calibra en
     train y evalúa en el test posterior. Devuelve un resultado por split válido.
@@ -153,6 +166,7 @@ def walk_forward(
             step_minutes=step_minutes,
             notional_usd=notional_usd,
             cooldown_minutes=cooldown_minutes,
+            sizer_fn=sizer_fn,
         )
         if cal is None:
             continue
@@ -167,6 +181,7 @@ def walk_forward(
             step_minutes=step_minutes,
             notional_usd=notional_usd,
             cooldown_minutes=cooldown_minutes,
+            sizer_fn=sizer_fn,
         )
         train_ev = cal.metrics.ev_per_signal_usd
         test_ev = test.metrics.ev_per_signal_usd

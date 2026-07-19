@@ -12,6 +12,20 @@ import math
 import statistics
 from dataclasses import dataclass
 
+# Umbral de Sharpe POR TRADE, no anualizado.
+#
+# El plan (§14) pedía "Sharpe > 1.0", cifra heredada de retornos diarios de
+# renta variable. En contratos binarios es inalcanzable: el retorno por trade
+# es bimodal y su std ronda 1.0, así que el ratio queda acotado muy por debajo.
+# Simulando 2000 trades: un edge irreal de +15 puntos de probabilidad da 0.33;
+# uno realista y fuerte de +4 puntos da 0.08. Un gate en 1.0 rechazaría
+# siempre, incluido el bot perfecto.
+#
+# 0.10 ≈ el edge realista fuerte de esa simulación. Es un punto de partida
+# defendible, NO un valor validado: recalíbralo contra trades reales en cuanto
+# haya histórico, que hoy no lo hay.
+SHARPE_PER_TRADE_MIN = 0.10
+
 
 def brier_score(predictions: list[float], outcomes: list[int]) -> float | None:
     """Brier = media de (p - o)². `p` ∈ [0,1] (P(YES)), `o` ∈ {0,1}.
@@ -45,30 +59,48 @@ def profit_factor(pnls: list[float]) -> float:
 def sharpe(returns: list[float]) -> float:
     """Sharpe NO anualizado sobre retornos por trade (pnl/notional).
 
-    mean / std. Devuelve 0 si <2 trades o std=0.
+    mean / std muestral. Devuelve 0 si <2 trades o std=0.
+
+    OJO con la escala: en contratos binarios el retorno por trade es bimodal
+    (ganas +(1-p)/p, pierdes -100%), así que la std ronda 1.0 y este Sharpe se
+    mueve en torno a 0.05-0.30 incluso para edges excelentes. NO es comparable
+    con el Sharpe anualizado ~1.0 de renta variable. Ver `SHARPE_PER_TRADE_MIN`.
     """
     if len(returns) < 2:
         return 0.0
     mean = statistics.fmean(returns)
-    std = statistics.pstdev(returns)
+    # stdev (muestral, n-1) y no pstdev: estos retornos son una muestra de un
+    # proceso, no la población. Con pocos trades pstdev subestima la dispersión
+    # e infla el ratio justo cuando menos evidencia hay.
+    std = statistics.stdev(returns)
     return mean / std if std > 0 else 0.0
 
 
-def max_drawdown(pnls: list[float]) -> float:
+def max_drawdown(pnls: list[float], initial_capital: float) -> float:
     """Max drawdown (fracción) sobre la curva de equity acumulada del backtest.
 
-    Equity parte de 0 y suma pnl por trade. Devuelve el peor giveback relativo
-    al pico previo, como fracción positiva (0.10 = 10%). Sin pico positivo → 0.
+    La equity parte de `initial_capital` y suma el pnl de cada trade. Devuelve
+    el peor giveback relativo al pico previo, como fracción positiva
+    (0.10 = 10%).
+
+    `initial_capital` es obligatorio y debe ser > 0: un drawdown *fraccional*
+    no está definido sin una base de capital. La versión anterior asumía una
+    equity que partía de 0, con lo que cualquier racha perdedora desde el
+    inicio dejaba el pico en 0, se saltaba el cálculo y reportaba 0.0 — el
+    caso más peligroso posible salía como el más limpio. Con capital inicial
+    el pico nunca es 0 y la fórmula queda siempre definida.
     """
-    equity = 0.0
-    peak = 0.0
+    if initial_capital <= 0:
+        raise ValueError(
+            f"initial_capital debe ser > 0 para un drawdown fraccional; got {initial_capital}"
+        )
+    equity = initial_capital
+    peak = initial_capital
     max_dd = 0.0
     for p in pnls:
         equity += p
         peak = max(peak, equity)
-        if peak > 0:
-            dd = (peak - equity) / peak
-            max_dd = max(max_dd, dd)
+        max_dd = max(max_dd, (peak - equity) / peak)
     return max_dd
 
 
@@ -83,6 +115,11 @@ class MetricsReport:
     sharpe: float
     max_drawdown: float
     brier: float | None
+    # Predicciones puntuadas por el Brier. Puede ser > n_trades: el modelo emite
+    # una probabilidad en cada detección, y el sizer luego decide si se opera o
+    # no. Si diverge mucho de `n_trades`, el sizer está vetando buena parte de
+    # las señales — merece la pena mirar por qué.
+    n_predictions: int = 0
 
     def passes_acceptance(
         self,
@@ -90,14 +127,20 @@ class MetricsReport:
         brier_max: float = 0.20,
         pf_min: float = 1.5,
         max_dd_max: float = 0.10,
+        sharpe_min: float = SHARPE_PER_TRADE_MIN,
     ) -> bool:
-        """Go/no-go según los umbrales objetivo del plan (§14)."""
+        """Go/no-go según los umbrales objetivo del plan (§14).
+
+        El Sharpe se comprueba aquí desde que existe el gate; antes figuraba en
+        los criterios del docstring del módulo pero no se evaluaba.
+        """
         if self.brier is None or self.brier >= brier_max:
             return False
         return (
             self.ev_per_signal_usd > 0
             and self.profit_factor >= pf_min
             and self.max_drawdown < max_dd_max
+            and self.sharpe >= sharpe_min
         )
 
 
@@ -106,7 +149,11 @@ def compute_metrics(
     returns: list[float],
     predictions: list[float],
     outcomes: list[int],
+    *,
+    initial_capital: float,
 ) -> MetricsReport:
+    """`initial_capital` es la base sobre la que se mide el drawdown fraccional.
+    Pásale el bankroll con el que se corrió el backtest."""
     wins = sum(1 for p in pnls if p > 0)
     n = len(pnls)
     return MetricsReport(
@@ -117,6 +164,7 @@ def compute_metrics(
         ev_per_signal_usd=ev_per_signal(pnls),
         profit_factor=profit_factor(pnls),
         sharpe=sharpe(returns),
-        max_drawdown=max_drawdown(pnls),
+        max_drawdown=max_drawdown(pnls, initial_capital),
         brier=brier_score(predictions, outcomes),
+        n_predictions=len(predictions),
     )
