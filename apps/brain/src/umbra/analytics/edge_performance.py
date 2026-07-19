@@ -10,6 +10,8 @@ from decimal import Decimal
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from umbra.backtest import metrics
+from umbra.config import settings
 from umbra.db.models import EdgePerformance, SignalAudit, TradeOutcome
 
 
@@ -30,24 +32,27 @@ def _profit_factor(pnls: list[float]) -> float | None:
 
 
 def _sharpe(returns: list[float]) -> float | None:
-    if len(returns) < 2:
+    """Wrapper sobre `metrics.sharpe` que conserva el None de este módulo.
+
+    `metrics.sharpe` devuelve 0.0 en los casos degenerados (<2 trades, std=0);
+    aquí se persiste en una columna nullable y `edge_weights` distingue "sin
+    dato" (usa default=1.0) de "cero". Mantener esa distinción.
+    """
+    if len(returns) < 2 or statistics.stdev(returns) == 0:
         return None
-    std = statistics.pstdev(returns)
-    if std == 0:
-        return None
-    return statistics.fmean(returns) / std
+    return metrics.sharpe(returns)
 
 
 def _max_drawdown(pnls: list[float]) -> float:
-    equity = 0.0
-    peak = 0.0
-    max_dd = 0.0
-    for pnl in pnls:
-        equity += pnl
-        peak = max(peak, equity)
-        if peak > 0:
-            max_dd = max(max_dd, (peak - equity) / peak)
-    return max_dd
+    """Drawdown fraccional sobre el bankroll configurado.
+
+    Delega en `metrics.max_drawdown` en vez de reimplementarlo: esta copia
+    arrastraba el mismo bug de equity partiendo de 0, y aquí dolía más que en
+    el backtest — alimenta `edge_weights.score_edge`, donde un max_dd falso de
+    0.0 se traduce en `stability = 1/(1+0) = 1.0`, la puntuación máxima. Un
+    edge que casi revienta y remonta puntuaba como uno estable.
+    """
+    return metrics.max_drawdown(pnls, settings.bankroll_usd)
 
 
 def _summary(trades: list[TradeOutcome]) -> dict:
