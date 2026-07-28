@@ -14,7 +14,7 @@
 > | Gate §14 | **Reescrito**: batir al mercado con significancia, no un umbral absoluto |
 > | Dinero real en juego | **Ninguno, en ningún momento.** Cero fills en modo `live` |
 >
-> Commits: `cf1005e` · `ff37dc2` · `25b5ffd` · `3bb5c55` · `ef38a46`
+> Commits: `cf1005e` · `ff37dc2` · `25b5ffd` · `3bb5c55` · `092c2c4` · `ef38a46` · `1fd4e6e`
 
 Auditoría del monorepo completo (`apps/brain`, `apps/exec`, `packages/contracts`)
 con vistas a convertirlo en un framework cuantitativo multi-exchange. No se ha
@@ -547,7 +547,7 @@ de tocar dinero, porque es la librería que firma.
 | 2 | 🔴 | `risk/engine.py:285-339` | Cuatro compuertas recortan nocional sin suelo → órdenes de $2 con EV negativo. 52% del flujo | ✅ `cf1005e` |
 | 1b | 🔴 | `portfolio/manager.py:229` | El pico de drawdown se reseteaba en cada momento plano → freno ciego. −15,82% real, −14,62% visto | ✅ `25b5ffd` |
 | 1c | 🔴 | `universe/scanner.py` | 42% del universo eran mercados con outcome de nombre propio, irresolubles | ✅ `3bb5c55` |
-| 1d | 🔴 | `polymarket/client.py` | Gamma filtra a no-cerrados por defecto → `outcomes` vacía durante semanas | ✅ `ef38a46`* |
+| 1d | 🔴 | `polymarket/client.py` | Gamma filtra a no-cerrados por defecto → `outcomes` vacía durante semanas | ✅ `092c2c4` |
 | 1e | 🟠 | `backtest/metrics.py` | El gate §14 usaba un umbral absoluto que un sistema sin edge cumple | ✅ `ef38a46` |
 | 3 | 🔴 | `engine/probability.py:22` | `compute_p_fair` es passthrough de la EMA. Kelly dimensiona sobre probabilidades no calibradas (GAP-01) | **ABIERTO — prioridad 1** |
 | 3b | 🔴 | `bus/intents.py` | El coste de SALIDA nunca se ha medido: `stage_intent` solo en la apertura | **ABIERTO** |
