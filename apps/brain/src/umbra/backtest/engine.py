@@ -156,10 +156,13 @@ def run_backtest(
     # de lo que es. La calidad de la estimación de probabilidad y la decisión de
     # operarla son dos cosas distintas y se miden por separado.
     predictions: list[float] = []
+    baselines: list[float] = []
     pred_outcomes: list[int] = []
 
     if start is None or end is None:
-        return BacktestResult([], compute_metrics([], [], [], [], initial_capital=capital))
+        return BacktestResult(
+            [], compute_metrics([], [], [], [], initial_capital=capital, baselines=[])
+        )
 
     step = timedelta(minutes=step_minutes)
     cooldown = timedelta(minutes=cooldown_minutes)
@@ -215,6 +218,11 @@ def run_backtest(
                 # modelo, no al gestor de riesgo.
                 predictions.append(p_fair)
                 pred_outcomes.append(1 if outcome_yes else 0)
+                # La referencia contra la que se juzga la calibración: el precio
+                # del mercado en ese mismo instante, sobre el mismo evento. Es lo
+                # que convierte el criterio §14 en «¿aporta algo el modelo?» en vez
+                # de «¿es bajo este número?». Ver `metrics.brier_skill`.
+                baselines.append(float(edge.market_price))
                 # El tamaño se decide ANTES del fill: el slippage de
                 # `compute_fill_price` depende del notional, igual que en vivo.
                 trade_notional = (
@@ -271,5 +279,6 @@ def run_backtest(
         predictions=predictions,
         outcomes=pred_outcomes,
         initial_capital=capital,
+        baselines=baselines,
     )
     return BacktestResult(trades=trades, metrics=metrics)

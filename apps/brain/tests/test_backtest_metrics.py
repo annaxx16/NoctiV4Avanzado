@@ -93,10 +93,126 @@ def test_aceptacion_comprueba_sharpe():
     # predicción constante baja de 0.25 de Brier, y el gate cortaría ahí sin
     # llegar nunca a evaluar el Sharpe, que es lo que este test comprueba.
     preds = [0.8, 0.2, 0.8, 0.2, 0.8, 0.2]
+    # Referencia de mercado que el modelo bate holgadamente: sin ella el gate
+    # cortaría en la compuerta de calibración y no llegaría nunca al Sharpe, que
+    # es lo que este test comprueba.
+    base = [0.5] * 6
     r = compute_metrics(
-        pnls, returns, preds, [1, 0, 1, 0, 1, 0], initial_capital=1000.0
+        pnls, returns, preds, [1, 0, 1, 0, 1, 0],
+        initial_capital=1000.0, baselines=base,
     )
     assert r.profit_factor >= 1.5
     assert r.sharpe < 1.0  # el umbral heredado de renta variable, inalcanzable aquí
-    assert r.passes_acceptance(sharpe_min=0.0)  # sin gate de Sharpe, pasaría
-    assert not r.passes_acceptance(sharpe_min=1.0)  # con el gate literal, nunca
+    assert r.passes_acceptance(sharpe_min=0.0, min_predictions=1)
+    assert not r.passes_acceptance(sharpe_min=1.0, min_predictions=1)
+
+
+# ---------------------------------------------------------------------------
+# El gate de calibración es RELATIVO
+#
+# «Brier < 0.20» lo cumple un sistema sin edge. Medido el 28/07/2026 sobre 1.799
+# eventos reales: modelo 0.0723, precio de mercado 0.0722. Los dos aprobaban un
+# gate de 0.20 y la diferencia entre ellos era cero.
+# ---------------------------------------------------------------------------
+
+
+def _retornos(n):
+    """Retornos con varianza. Constantes darían Sharpe 0 y el gate cortaría ahí,
+    tapando justo la compuerta que estos tests quieren ejercitar."""
+    return [1.0 if i % 2 else 0.8 for i in range(n)]
+
+
+def _perfecto(n=400):
+    """Modelo que acierta; mercado que se queda en 0.5."""
+    outcomes = [i % 2 for i in range(n)]
+    preds = [0.95 if o else 0.05 for o in outcomes]
+    base = [0.5] * n
+    return preds, base, outcomes
+
+
+def test_un_modelo_que_copia_al_mercado_no_bate_al_mercado():
+    """El caso que el gate viejo dejaba pasar.
+
+    `compute_p_fair` es hoy un passthrough de la EMA del mid, o sea una versión
+    suavizada del precio. Predice casi igual que el mercado — y eso no es edge.
+    """
+    from umbra.backtest.metrics import brier_skill
+
+    outcomes = [i % 2 for i in range(400)]
+    mercado = [0.9 if o else 0.1 for o in outcomes]
+    modelo = [p + 0.001 for p in mercado]  # una pizca distinto, sin información
+
+    sk = brier_skill(modelo, mercado, outcomes)
+    assert sk is not None
+    assert sk.brier_model < 0.20, "supera el umbral absoluto viejo..."
+    assert sk.brier_baseline < 0.20, "...y el mercado también"
+    assert sk.beats_baseline is False, "pero no bate al mercado, que es lo que importa"
+
+
+def test_un_modelo_con_informacion_real_si_bate_al_mercado():
+    from umbra.backtest.metrics import brier_skill
+
+    sk = brier_skill(*_perfecto())
+    assert sk is not None
+    assert sk.diff_mean < 0
+    assert sk.ci_hi < 0
+    assert sk.beats_baseline is True
+
+
+def test_el_intervalo_que_cruza_cero_no_es_evidencia():
+    """Los números reales del 28/07/2026: diff -0.00222, IC [-0.00564, +0.00056]."""
+    from umbra.backtest.metrics import BrierSkill
+
+    sk = BrierSkill(
+        n=136, brier_model=0.1104, brier_baseline=0.1126,
+        diff_mean=-0.00222, ci_lo=-0.00564, ci_hi=0.00056,
+    )
+    assert sk.diff_mean < 0, "el punto estimado favorece al modelo"
+    assert sk.beats_baseline is False, "pero el intervalo cruza cero: es ruido"
+
+
+def test_el_bootstrap_es_determinista():
+    """Un gate go/no-go no puede dar dos veredictos sobre los mismos datos."""
+    from umbra.backtest.metrics import brier_skill
+
+    args = _perfecto()
+    assert brier_skill(*args).ci_hi == brier_skill(*args).ci_hi
+
+
+def test_sin_referencia_de_mercado_el_gate_no_pasa():
+    """Fail-closed: no poder afirmar no es poder afirmar que sí."""
+    from umbra.backtest.metrics import compute_metrics
+
+    preds, _, outcomes = _perfecto()
+    n = len(preds)
+    rep = compute_metrics(
+        [1.0] * n, _retornos(n), preds, outcomes, initial_capital=1000.0
+    )
+    assert rep.skill is None
+    assert rep.passes_acceptance() is False
+
+
+def test_con_referencia_y_edge_real_el_gate_pasa():
+    from umbra.backtest.metrics import compute_metrics
+
+    preds, base, outcomes = _perfecto()
+    n = len(preds)
+    rep = compute_metrics(
+        [1.0] * n, _retornos(n), preds, outcomes,
+        initial_capital=1000.0, baselines=base,
+    )
+    assert rep.skill is not None and rep.skill.beats_baseline
+    assert rep.passes_acceptance() is True
+
+
+def test_una_muestra_pequeña_no_pasa_aunque_el_intervalo_excluya_cero():
+    """No confundir «no hay edge» con «no hay datos»."""
+    from umbra.backtest.metrics import compute_metrics
+
+    preds, base, outcomes = _perfecto(n=40)
+    rep = compute_metrics(
+        [1.0] * 40, _retornos(40), preds, outcomes,
+        initial_capital=1000.0, baselines=base,
+    )
+    assert rep.passes_acceptance(min_predictions=200) is False
+    assert rep.passes_acceptance(min_predictions=10) is True

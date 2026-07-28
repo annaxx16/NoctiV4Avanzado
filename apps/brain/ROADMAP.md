@@ -306,8 +306,19 @@ Si Camino C (pivotar):
 ## Criterios NO negociables para tocar dinero real (Mes 7+ en escenario optimista)
 
 1. ≥ 90 días de paper trading continuo con outcomes resueltos.
-2. Brier score sostenido < 0.20.
-3. Sharpe paper > 1.0 después de slippage modelado.
+2. **Batir al precio de mercado en Brier, con significancia estadística**: el
+   intervalo del 95% de la diferencia emparejada, entero por debajo de cero, sobre
+   ≥ 200 predicciones. *(Antes decía «Brier < 0.20». Se cambió el 28/07/2026: ese
+   umbral lo cumple un sistema sin edge alguno. Medido sobre 1.799 eventos reales,
+   el modelo dio 0.0723 y el precio de mercado 0.0722 — los dos aprobaban con
+   holgura y la diferencia entre ellos era cero. Si la mayoría de mercados
+   resuelven cerca de su precio, copiar el precio ya saca un Brier bajo: el
+   umbral absoluto no premiaba acertar, premiaba operar en mercados fáciles.)*
+3. Sharpe **por trade** ≥ 0.10 después de slippage medido. *(Antes decía «> 1.0».
+   Corregido según `docs/AUDIT_2026-07.md` §4: en contratos binarios el retorno por
+   trade es bimodal, la std ronda 1.0 y el ratio queda acotado muy por debajo. Un
+   gate en 1.0 rechazaría siempre, incluido un bot perfecto. El 0.10 sale de
+   simulación y sigue **sin validar** contra trades reales.)*
 4. Walk-forward sin degradación > 20% entre train y test.
 5. Max drawdown paper < 15%.
 6. Circuit breakers activos funcionando.
@@ -317,3 +328,19 @@ Si Camino C (pivotar):
 10. Alertas configuradas (Telegram o equivalente).
 
 **Si UNA falla → no se opera con dinero. Sin excepción.**
+
+> **Estado del criterio 2 a 28/07/2026: NO se cumple.** Primera medición posible del
+> proyecto, tras arreglar el resolver de outcomes:
+>
+> | muestra | n | Brier modelo | Brier mercado |
+> |---|---|---|---|
+> | todas las señales | 1.799 | 0.0723 | 0.0722 |
+> | solo aceptadas | 136 | 0.1104 | 0.1126 |
+>
+> Diferencia media −0.00222, IC 95% por bootstrap emparejado **[−0.00564, +0.00056]**:
+> cruza el cero. No hay evidencia de que el modelo prediga mejor que el mercado.
+>
+> Era lo esperable: `engine/probability.compute_p_fair` es un passthrough de la EMA
+> del mid, o sea una versión suavizada del precio, y no puede batir a aquello de lo
+> que se deriva. Cerrar GAP-01 —calibrar `p_fair`— es lo que hace de este criterio
+> algo alcanzable en vez de una tautología.

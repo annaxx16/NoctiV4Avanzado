@@ -1,7 +1,13 @@
 """Métricas de validación de un edge (puras, stdlib only).
 
-Criterios de aceptación (ver RESTRUCTURE_PLAN §14):
-  Brier < 0.20 · EV/señal > 0 · Profit Factor > 1.5 · Sharpe > 1.0 · MaxDD < 10%
+Criterios de aceptación (§14):
+  bate al mercado con significancia · EV/señal > 0 · Profit Factor > 1.5
+  · Sharpe/trade >= 0.10 · MaxDD < 10%
+
+El criterio de calibración es RELATIVO. «Brier < 0.20» lo cumple un sistema sin
+edge: el 28/07/2026, sobre 1.799 eventos reales, el modelo dio 0.0723 y el precio
+de mercado 0.0722. Los dos aprobaban, y la diferencia era cero. Ver
+`brier_skill` y `MetricsReport.passes_acceptance`.
 
 Todas reciben listas de números o de `BacktestTrade` y no tocan estado global.
 """
@@ -9,6 +15,7 @@ Todas reciben listas de números o de `BacktestTrade` y no tocan estado global.
 from __future__ import annotations
 
 import math
+import random
 import statistics
 from dataclasses import dataclass
 
@@ -36,6 +43,84 @@ def brier_score(predictions: list[float], outcomes: list[int]) -> float | None:
     if not predictions or len(predictions) != len(outcomes):
         return None
     return sum((p - o) ** 2 for p, o in zip(predictions, outcomes, strict=False)) / len(predictions)
+
+
+@dataclass(frozen=True)
+class BrierSkill:
+    """Cuánto mejor predice el modelo que la referencia, y si es real.
+
+    `diff_mean` es la diferencia media de errores cuadráticos, modelo menos
+    referencia: **negativo = el modelo predice mejor**. `ci_lo`/`ci_hi` son el
+    intervalo del 95% por bootstrap emparejado.
+
+    `beats_baseline` solo es cierto si el intervalo entero queda por debajo de
+    cero. Un punto estimado favorable con el intervalo cruzando el cero es ruido,
+    y este dataclass existe precisamente para que no se pueda confundir con
+    evidencia.
+    """
+
+    n: int
+    brier_model: float
+    brier_baseline: float
+    diff_mean: float
+    ci_lo: float
+    ci_hi: float
+
+    @property
+    def beats_baseline(self) -> bool:
+        return self.ci_hi < 0.0
+
+
+def brier_skill(
+    predictions: list[float],
+    baselines: list[float],
+    outcomes: list[int],
+    *,
+    n_boot: int = 10_000,
+    seed: int = 7,
+) -> BrierSkill | None:
+    """Compara el Brier del modelo contra el de una referencia, sobre los MISMOS
+    eventos.
+
+    La referencia natural aquí es el precio de mercado. Un Brier absoluto bajo no
+    dice nada por sí solo: si la mayoría de mercados resuelven cerca de su precio,
+    cualquiera saca 0.07 copiando el precio. La pregunta útil no es "¿es bajo?"
+    sino "¿es más bajo que el del mercado, y por más de lo que explica el azar?".
+
+    Bootstrap emparejado: se remuestrean los pares (error_modelo, error_mercado)
+    del mismo evento, así que la correlación entre ambos —que es altísima, porque
+    predicen lo mismo— no infla el intervalo. `seed` fijo: un gate go/no-go no
+    puede dar un veredicto distinto en dos ejecuciones sobre los mismos datos.
+    """
+    if not predictions or len(predictions) != len(outcomes) != len(baselines):
+        return None
+    if len(baselines) != len(predictions):
+        return None
+
+    pares = [
+        ((p - o) ** 2, (b - o) ** 2)
+        for p, b, o in zip(predictions, baselines, outcomes, strict=True)
+    ]
+    n = len(pares)
+    diffs = [em - eb for em, eb in pares]
+    media = statistics.fmean(diffs)
+
+    rng = random.Random(seed)
+    medias = sorted(
+        statistics.fmean([diffs[rng.randrange(n)] for _ in range(n)])
+        for _ in range(n_boot)
+    )
+    lo = medias[int(0.025 * n_boot)]
+    hi = medias[int(0.975 * n_boot)]
+
+    return BrierSkill(
+        n=n,
+        brier_model=statistics.fmean([em for em, _ in pares]),
+        brier_baseline=statistics.fmean([eb for _, eb in pares]),
+        diff_mean=media,
+        ci_lo=lo,
+        ci_hi=hi,
+    )
 
 
 def hit_rate(wins: int, total: int) -> float:
@@ -120,21 +205,43 @@ class MetricsReport:
     # no. Si diverge mucho de `n_trades`, el sizer está vetando buena parte de
     # las señales — merece la pena mirar por qué.
     n_predictions: int = 0
+    # Modelo contra precio de mercado sobre los mismos eventos. `None` si el
+    # backtest no aportó referencia — y entonces el gate no puede pasar.
+    skill: BrierSkill | None = None
 
     def passes_acceptance(
         self,
         *,
-        brier_max: float = 0.20,
         pf_min: float = 1.5,
         max_dd_max: float = 0.10,
         sharpe_min: float = SHARPE_PER_TRADE_MIN,
+        min_predictions: int = 200,
     ) -> bool:
-        """Go/no-go según los umbrales objetivo del plan (§14).
+        """Go/no-go según los criterios §14.
 
-        El Sharpe se comprueba aquí desde que existe el gate; antes figuraba en
-        los criterios del docstring del módulo pero no se evaluaba.
+        EL GATE DE CALIBRACIÓN ES RELATIVO, NO ABSOLUTO
+        -----------------------------------------------
+        Antes exigía `brier < 0.20`. Ese umbral **lo cumple un sistema sin edge
+        alguno**. Medido sobre datos reales el 28/07/2026: el modelo sacó 0.0723 y
+        el precio de mercado 0.0722 sobre los mismos 1.799 eventos. Ambos aprueban
+        holgadamente un gate de 0.20, y la diferencia entre ellos era cero.
+
+        La razón es aritmética: si la mayoría de mercados resuelven cerca de su
+        precio, copiar el precio ya da un Brier bajo. Un umbral absoluto no premia
+        acertar, premia operar en mercados fáciles.
+
+        Así que ahora se exige **batir al mercado con significancia**: el intervalo
+        de confianza del 95% de la diferencia emparejada tiene que quedar entero
+        por debajo de cero. Sin referencia de mercado (`skill is None`) no se puede
+        afirmar nada y el gate no pasa — fail-closed, como el resto del sistema.
+
+        `min_predictions` existe porque con muestra pequeña el intervalo es tan
+        ancho que nunca excluirá el cero; declararlo evita leer un no-pasa por
+        falta de datos como un no-pasa por falta de edge.
         """
-        if self.brier is None or self.brier >= brier_max:
+        if self.skill is None or not self.skill.beats_baseline:
+            return False
+        if self.skill.n < min_predictions:
             return False
         return (
             self.ev_per_signal_usd > 0
@@ -151,9 +258,17 @@ def compute_metrics(
     outcomes: list[int],
     *,
     initial_capital: float,
+    baselines: list[float] | None = None,
 ) -> MetricsReport:
     """`initial_capital` es la base sobre la que se mide el drawdown fraccional.
-    Pásale el bankroll con el que se corrió el backtest."""
+    Pásale el bankroll con el que se corrió el backtest.
+
+    `baselines` son las probabilidades de la referencia —el precio de mercado en
+    el momento de cada predicción— sobre los mismos eventos y en el mismo orden.
+    Sin ellas no hay `skill`, y sin `skill` el gate §14 no puede pasar. Es
+    opcional por compatibilidad con los llamantes que aún no la pasan, no porque
+    sea prescindible.
+    """
     wins = sum(1 for p in pnls if p > 0)
     n = len(pnls)
     return MetricsReport(
@@ -167,4 +282,9 @@ def compute_metrics(
         max_drawdown=max_drawdown(pnls, initial_capital),
         brier=brier_score(predictions, outcomes),
         n_predictions=len(predictions),
+        skill=(
+            None
+            if baselines is None
+            else brier_skill(predictions, baselines, outcomes)
+        ),
     )
