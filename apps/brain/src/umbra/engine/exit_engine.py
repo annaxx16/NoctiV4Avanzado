@@ -358,21 +358,30 @@ async def open_positions(session: AsyncSession) -> list[PaperPosition]:
     ).scalars().all()
 
 
-async def _liquidity_for(session: AsyncSession, market_id: str) -> float | None:
-    """Mejor estimación de liquidez ahora (para slippage de venta)."""
+async def _book_context_for(
+    session: AsyncSession, market_id: str
+) -> tuple[float | None, float | None]:
+    """Liquidez y spread actuales, para el modelo de slippage de la venta.
+
+    Los dos salen del mismo snapshot a propósito: son las dos entradas del mismo
+    modelo, y tomarlas de filas distintas mezclaría dos estados del libro.
+    """
     stmt = (
-        select(BookSnapshot.liquidity_num, BookSnapshot.volume_24hr)
+        select(
+            BookSnapshot.liquidity_num,
+            BookSnapshot.volume_24hr,
+            BookSnapshot.spread,
+        )
         .where(BookSnapshot.market_id == market_id)
         .order_by(desc(BookSnapshot.ts))
         .limit(1)
     )
     row = (await session.execute(stmt)).first()
     if row is None:
-        return None
-    liq, vol = row
-    if liq is not None:
-        return float(liq)
-    return float(vol) if vol is not None else None
+        return None, None
+    liq, vol, spread = row
+    liquidity = float(liq) if liq is not None else (float(vol) if vol is not None else None)
+    return liquidity, (float(spread) if spread is not None else None)
 
 
 async def evaluate_and_execute_exits(
@@ -386,7 +395,7 @@ async def evaluate_and_execute_exits(
         d = await decide_exit_for(session, pos, portfolio_dd_pct)
         if d is None:
             continue
-        liq = await _liquidity_for(session, pos.market_id)
+        liq, spread = await _book_context_for(session, pos.market_id)
         await execute_close(
             session=session,
             position=pos,
@@ -396,6 +405,7 @@ async def evaluate_and_execute_exits(
             reason=d.reason,
             mode="sim",
             at_resolution=d.reason == "t1_outcome_resolved",
+            spread=spread,
         )
         decisions.append(d)
     return decisions
@@ -411,7 +421,7 @@ async def flatten_all(
         mid_yes, _, _ = await _resolve_mid_yes(session, pos.market_id)
         if mid_yes is None:
             mid_yes = 0.5  # fallback simétrico — peor caso
-        liq = await _liquidity_for(session, pos.market_id)
+        liq, spread = await _book_context_for(session, pos.market_id)
         await execute_close(
             session=session,
             position=pos,
@@ -420,6 +430,7 @@ async def flatten_all(
             fraction=1.0,
             reason=reason,
             mode="sim",
+            spread=spread,
         )
         n += 1
     return n

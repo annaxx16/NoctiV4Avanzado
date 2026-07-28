@@ -193,8 +193,14 @@ async def evaluate_market(
             # uno partiera de una liquidez distinta, la diferencia no sería del
             # modelo, sería de los datos de entrada.
             liquidity = _liquidity_from_snapshots(snapshots)
+            # Mismo criterio para el spread: el modelo de slippage tiene dos
+            # entradas y las dos vienen del mismo snapshot, o la resta de la Fase 3
+            # compararía predicciones hechas sobre dos estados del libro.
+            spread = _spread_from_snapshots(snapshots)
             try:
-                await paper_execute(session, signal, liquidity_usd=liquidity)
+                await paper_execute(
+                    session, signal, liquidity_usd=liquidity, spread=spread
+                )
             except Exception as exc:
                 log.warning(
                     "paper.execute_failed",
@@ -211,7 +217,9 @@ async def evaluate_market(
                 # el bus es un instrumento de medida colgado al lado del sistema,
                 # no un eslabón del que dependa la contabilidad.
                 try:
-                    await stage_intent(session, signal, liquidity_usd=liquidity)
+                    await stage_intent(
+                        session, signal, liquidity_usd=liquidity, spread=spread
+                    )
                 except Exception as exc:
                     log.warning(
                         "intents.stage_failed",
@@ -236,4 +244,20 @@ def _liquidity_from_snapshots(snapshots) -> float | None:
     for s in reversed(snapshots):
         if hasattr(s, "volume_24hr") and s.volume_24hr is not None:
             return float(s.volume_24hr)
+    return None
+
+
+def _spread_from_snapshots(snapshots) -> float | None:
+    """El spread más reciente del histórico.
+
+    `None` si ningún snapshot lo trae, y entonces el modelo de slippage cae a su
+    rama antigua. No se inventa un spread por defecto: un cero diría que cruzar es
+    gratis, y un valor típico diría que sabemos algo que no sabemos.
+    """
+    if not snapshots:
+        return None
+    for s in reversed(snapshots):
+        spread = getattr(s, "spread", None)
+        if spread is not None:
+            return float(spread)
     return None

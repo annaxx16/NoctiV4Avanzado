@@ -175,6 +175,7 @@ async def stage_intent(
     signal: Signal,
     liquidity_usd: float | None,
     now: datetime | None = None,
+    spread: float | None = None,
 ) -> Intent | None:
     """Deja el intent en el outbox, dentro de la transacción de la señal.
 
@@ -184,10 +185,10 @@ async def stage_intent(
     el paper fill y la auditoría siguen su camino, y en `intents` no queda una fila
     que el reporte tendría que aprender a ignorar.
 
-    `liquidity_usd` es el mismo que recibe `execution/paper.py`. Tiene que serlo:
-    `expected_slippage_bps` es lo que ese modelo predijo, no una segunda opinión
-    calculada aquí con otros datos. La resta de la Fase 3 solo significa algo si
-    la mitad izquierda es exactamente la que el backtest usó.
+    `liquidity_usd` y `spread` son los mismos que recibe `execution/paper.py`.
+    Tienen que serlo: `expected_slippage_bps` es lo que ese modelo predijo, no una
+    segunda opinión calculada aquí con otros datos. La resta de la Fase 3 solo
+    significa algo si la mitad izquierda es exactamente la que el backtest usó.
     """
     now = now or datetime.now(UTC)
 
@@ -223,8 +224,11 @@ async def stage_intent(
     notional = _q(signal.notional_usd, _MONEY)
     max_bps = settings.intent_max_slippage_bps
 
-    # El mismo modelo, la misma liquidez, el mismo nocional que el paper fill.
-    _, expected_bps = compute_fill_price(signal.side, mid_yes, notional, liquidity_usd)
+    # El mismo modelo, la misma liquidez, el mismo spread, el mismo nocional que el
+    # paper fill.
+    _, expected_bps = compute_fill_price(
+        signal.side, mid_yes, notional, liquidity_usd, spread
+    )
 
     intent = Intent(
         intent_id=str(uuid.uuid4()),

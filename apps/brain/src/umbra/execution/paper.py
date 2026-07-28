@@ -96,18 +96,63 @@ def _fee_rate() -> Decimal:
 # ---------------------------------------------------------------------------
 
 
+def half_spread_bps(
+    spread: float | Decimal | None, price: float | Decimal | None
+) -> Decimal | None:
+    """El medio spread, en bps sobre el precio del token que se compra.
+
+    `None` cuando no se puede calcular con honestidad: sin spread no hay número, y
+    devolver un cero diría "cruzar es gratis", que es exactamente el error que este
+    módulo acaba de dejar de cometer.
+
+    El denominador es el precio del **token que se compra**, no el mid del YES. Los
+    libros de YES y NO son espejo: el spread absoluto es el mismo, pero en bps no,
+    porque el denominador cambia. Comprar NO a $0,05 con un spread de un céntimo
+    cuesta 1.000 bps; el mismo libro, comprando YES a $0,95, cuesta 53.
+    """
+    if spread is None or price is None:
+        return None
+    s = _dec(spread)
+    p = _dec(price)
+    if s < 0 or p <= 0:
+        return None
+    return (s / _dec(2)) / p * _BPS_DENOM
+
+
 def _slippage_bps(
-    notional_usd: float | Decimal, liquidity_usd: float | Decimal | None
+    notional_usd: float | Decimal,
+    liquidity_usd: float | Decimal | None,
+    *,
+    spread: float | Decimal | None = None,
+    price: float | Decimal | None = None,
 ) -> Decimal:
+    """Coste de cruzar, en bps. Medio spread + impacto, con suelo y tope.
+
+    Ajustado contra los 315 fills que `exec` cotizó en la Fase 3 (ver `config.py`).
+    El término dominante es el medio spread; el de impacto se conserva sin validar
+    porque a los tamaños actuales no hay variación con la que ajustarlo.
+
+    Sin `spread`/`price` cae al modelo anterior —`base + size_factor · ratio`— que
+    en producción es la constante `base`. Ese camino existe solo para los llamantes
+    que aún no propagan el libro; **subestima el coste por un factor ~9**.
+    """
     base = _dec(settings.slippage_base_bps)
     size_factor = _dec(settings.slippage_size_factor_bps)
     cap = _dec(settings.slippage_cap_bps)
 
     if liquidity_usd is None or _dec(liquidity_usd) <= 0:
-        return _q(min(base + size_factor, cap), BPS)
+        # Sin liquidez conocida no se puede escalar el impacto: se asume el peor
+        # caso del término, como hacía el modelo anterior.
+        impact = size_factor
+    else:
+        impact = size_factor * (abs(_dec(notional_usd)) / _dec(liquidity_usd))
 
-    ratio = abs(_dec(notional_usd)) / _dec(liquidity_usd)
-    return _q(min(base + size_factor * ratio, cap), BPS)
+    half = half_spread_bps(spread, price)
+    if half is None:
+        return _q(min(base + impact, cap), BPS)
+
+    spread_term = _dec(settings.slippage_spread_factor) * half
+    return _q(_clamp(spread_term + impact, base, cap), BPS)
 
 
 def theoretical_price(side: str, mid_yes: Decimal) -> Decimal:
@@ -147,14 +192,18 @@ def compute_fill_price(
     mid_yes: float | Decimal,
     notional_usd: float | Decimal,
     liquidity_usd: float | Decimal | None,
+    spread: float | Decimal | None = None,
 ) -> tuple[Decimal, Decimal]:
     """Precio de COMPRA (apertura) con slippage adverso AL ALZA.
 
     Si side=BUY_YES, theoretical = mid_yes; si side=BUY_NO, theoretical = 1 - mid_yes.
+
+    `spread` es el del `BookSnapshot` que originó la señal. Opcional por
+    compatibilidad; omitirlo cae al modelo pre-Fase 3, que subestima el coste.
     """
-    bps = _slippage_bps(notional_usd, liquidity_usd)
-    factor = _ONE + (bps / _BPS_DENOM)
     theoretical = theoretical_price(side, _dec(mid_yes))
+    bps = _slippage_bps(notional_usd, liquidity_usd, spread=spread, price=theoretical)
+    factor = _ONE + (bps / _BPS_DENOM)
     # Se cuantiza antes de recortar: el clamp debe morder sobre el precio que se
     # guardará, no sobre uno que el redondeo aún puede sacar del rango.
     fill_price = _clamp(_q(theoretical * factor, PRICE), _PRICE_MIN, _PRICE_MAX)
@@ -166,14 +215,18 @@ def compute_close_price(
     mid_yes: float | Decimal,
     notional_usd: float | Decimal,
     liquidity_usd: float | Decimal | None,
+    spread: float | Decimal | None = None,
 ) -> tuple[Decimal, Decimal]:
     """Precio de VENTA (cierre) con slippage adverso A LA BAJA.
 
     Recibes menos de lo teórico al cerrar — esto refleja el bid del lado.
+
+    El cierre paga su propio medio spread: la Fase 3 solo midió la entrada, y el
+    coste de ida y vuelta es la suma de los dos cruces.
     """
-    bps = _slippage_bps(notional_usd, liquidity_usd)
-    factor = max(_ZERO, _ONE - (bps / _BPS_DENOM))
     theoretical = theoretical_price(side, _dec(mid_yes))
+    bps = _slippage_bps(notional_usd, liquidity_usd, spread=spread, price=theoretical)
+    factor = max(_ZERO, _ONE - (bps / _BPS_DENOM))
     close_price = _clamp(_q(theoretical * factor, PRICE), _PRICE_MIN, _PRICE_MAX)
     return close_price, bps
 
@@ -298,6 +351,7 @@ async def execute_signal(
     session: AsyncSession,
     signal: Signal,
     liquidity_usd: float | None,
+    spread: float | None = None,
 ) -> FillResult | None:
     """OPEN: fill de apertura a partir de una Signal aceptada y persistida."""
     if not signal.accepted or signal.size_shares is None or signal.notional_usd is None:
@@ -312,7 +366,9 @@ async def execute_signal(
     mid_yes = _q(signal.market_price, PRICE)
     notional = _q(signal.notional_usd, MONEY)
 
-    fill_price, bps = compute_fill_price(signal.side, mid_yes, notional, liquidity_usd)
+    fill_price, bps = compute_fill_price(
+        signal.side, mid_yes, notional, liquidity_usd, spread
+    )
     if fill_price <= 0:
         return None
 
@@ -384,6 +440,7 @@ async def execute_close(
     reason: str = "unspecified",
     mode: str | None = None,
     at_resolution: bool = False,
+    spread: float | None = None,
 ) -> FillResult | None:
     """CLOSE parcial o total. `fraction` en (0, 1].
 
@@ -420,7 +477,7 @@ async def execute_close(
         theoretical_per_share = _clamp(side_value, _PRICE_MIN, _PRICE_MAX)
         notional_theoretical = shares_to_close * theoretical_per_share
         close_price, bps = compute_close_price(
-            position.side, mid_yes, notional_theoretical, liquidity_usd
+            position.side, mid_yes, notional_theoretical, liquidity_usd, spread
         )
 
     # Hacia abajo lo que recibimos, hacia arriba lo que pagamos.

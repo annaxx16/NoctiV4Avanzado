@@ -68,6 +68,10 @@ _PINNED = {
     "max_spread_for_entry": 0.04,
     "min_liquidity_for_entry_usd": 3000.0,
     "max_time_to_resolution_hours_floor": 2.0,
+    # Desactivado en el mundo base: las compuertas 1-11 se prueban una a una, y un
+    # suelo activo las taparía justo cuando recortan hasta un nocional pequeño —
+    # que es lo que varias de ellas afirman hacer. La 12 tiene sus propios tests.
+    "min_notional_usd": 0.0,
 }
 
 
@@ -480,3 +484,55 @@ async def test_gate_11_realized_pnl_counts_as_cash(world, monkeypatch):
     d = await _check(sizing=SizingResult(f_star=0.9, shares=1000.0, notional_usd=950.0))
     assert d.accepted is True
     assert d.adjusted_notional_usd == pytest.approx(500.0)  # 600 - 100 de reserva
+
+
+# ---------------------------------------------------------------------------
+# 12. Suelo de nocional
+#
+# La compuerta que la Fase 3 hizo necesaria: 181 de 345 intents eran de menos de
+# $5, pagaban 281 bps de media y concentraban el 100% de los rechazos de exec.
+# ---------------------------------------------------------------------------
+
+
+async def test_gate_12_rejects_below_the_floor(world, monkeypatch):
+    monkeypatch.setattr(engine.settings, "min_notional_usd", 10.0)
+    d = await _check(sizing=SizingResult(f_star=0.01, shares=18.0, notional_usd=9.0))
+    assert d.accepted is False
+    assert d.reason.startswith("notional_below_floor")
+    assert d.adjusted_notional_usd == 0.0
+    assert d.adjusted_shares == 0.0
+
+
+async def test_gate_12_accepts_exactly_at_the_floor(world, monkeypatch):
+    """El suelo es inclusivo: `< floor` rechaza, `== floor` pasa."""
+    monkeypatch.setattr(engine.settings, "min_notional_usd", 10.0)
+    d = await _check(sizing=SizingResult(f_star=0.01, shares=20.0, notional_usd=10.0))
+    assert d.accepted is True
+    assert d.adjusted_notional_usd == pytest.approx(10.0)
+
+
+async def test_gate_12_sees_the_notional_AFTER_the_clipping(world, monkeypatch):
+    """El motivo de que la compuerta vaya la última.
+
+    Se pide un nocional muy por encima del suelo y la compuerta 10 lo recorta a $5.
+    Si el suelo se comprobara antes de los recortes, esta orden pasaría: en ese
+    punto todavía no es pequeña. Es exactamente el caso que produjo las órdenes de
+    $2 en la ventana de shadow.
+    """
+    monkeypatch.setattr(engine.settings, "min_notional_usd", 10.0)
+    monkeypatch.setattr(engine.settings, "bankroll_usd", 1000.0)
+    monkeypatch.setattr(engine.settings, "max_gross_exposure_pct", 0.50)
+    monkeypatch.setattr(engine.settings, "max_exposure_per_market_usd", 10_000.0)
+    world.gross = 495.0  # hueco de 5, con una petición de 50
+
+    d = await _check(sizing=SizingResult(f_star=0.5, shares=100.0, notional_usd=50.0))
+    assert d.accepted is False
+    assert d.reason == "notional_below_floor 5.00 < 10.00"
+
+
+async def test_gate_12_disabled_at_zero_keeps_old_behaviour(world, monkeypatch):
+    """A 0 la compuerta no existe. Es la vía de retorno si el suelo resulta caro."""
+    monkeypatch.setattr(engine.settings, "min_notional_usd", 0.0)
+    d = await _check(sizing=SizingResult(f_star=0.001, shares=2.0, notional_usd=1.0))
+    assert d.accepted is True
+    assert d.adjusted_notional_usd == pytest.approx(1.0)

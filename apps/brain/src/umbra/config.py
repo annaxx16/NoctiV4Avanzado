@@ -50,6 +50,26 @@ class Settings(BaseSettings):
     max_risk_per_trade_usd: float = Field(default=50.0)
     max_exposure_per_market_usd: float = Field(default=200.0)
 
+    # Suelo de nocional — la compuerta 12 del risk engine.
+    #
+    # Las compuertas 8-11 solo saben recortar, y lo hacen multiplicativamente: un
+    # nocional de $6 que atraviesa tres recortes sale convertido en $2. La Fase 3
+    # midió lo que cuestan esas órdenes:
+    #
+    #     <$5    n=181 (52% del flujo)  281 bps de media, y el 100% de los
+    #                                   rechazos que emitió exec
+    #     $5-10  n= 51                  102 bps
+    #     $10-25 n= 54                   57 bps
+    #     >=$25  n= 29                   36 bps
+    #
+    # Un edge en el umbral (`min_edge`=0.02) sobre un contrato a $0,50 son 400 bps
+    # brutos. La ida y vuelta del tramo <$5 son 562. Esas órdenes tienen EV
+    # negativo por construcción, antes de que el edge se ponga a prueba: no es que
+    # el edge sea malo, es que no puede pagar su propio peaje.
+    #
+    # A 0 el comportamiento es el de siempre.
+    min_notional_usd: float = Field(default=10.0, ge=0.0)
+
     # Edge: Overreaction
     overreaction_sigma_threshold: float = Field(default=3.0)
     overreaction_min_snapshots: int = Field(default=10)
@@ -59,9 +79,31 @@ class Settings(BaseSettings):
     momentum_lookback_snapshots: int = Field(default=6)
 
     # Paper execution
+    #
+    # El coste de cruzar es, ante todo, el MEDIO SPREAD. Lo midió la Fase 3 sobre
+    # 315 fills cotizados contra el libro real: ajustando
+    # `predicho = k · medio_spread + size_factor · (nocional/liquidez)` por error
+    # absoluto mediano, el óptimo es k=1.0 y size_factor≈0. Sobre el tramo de
+    # órdenes pequeñas (n=124) el residuo mediano contra el medio spread es 0.0:
+    # pagas el spread, y nada más.
+    #
+    # El modelo anterior era `base + size_factor · ratio` sin término de spread.
+    # Con nocionales de ~$11 contra liquidez de ~$5.000 el segundo término aportaba
+    # 0,4 bps, así que en producción devolvía la constante 20,0 en los 345 intents
+    # emitidos, sin una sola excepción. Predecía 20 bps donde el libro cobraba 191.
+    slippage_spread_factor: float = Field(default=1.0, ge=0.0)
+    # Suelo: lo que cuesta cruzar aunque el spread sea cero. Antes era el término
+    # base al que se sumaba todo lo demás; ahora es el mínimo del resultado.
     slippage_base_bps: float = Field(default=20.0)
+    # El término de impacto sigue aquí y sigue SIN VALIDAR: en la muestra de la
+    # Fase 3 los ratios nocional/liquidez van de 1e-5 a 5e-4 y no hay variación
+    # suficiente para ajustarlo. Se conserva porque es la única protección si algún
+    # día los tamaños crecen; hoy aporta centésimas de punto básico.
     slippage_size_factor_bps: float = Field(default=200.0)
-    slippage_cap_bps: float = Field(default=500.0)
+    # Sube de 500 a 1500: con término de spread, un mercado de libro ancho predice
+    # por encima de 500 y el tope anterior lo truncaba justo donde el modelo
+    # empezaba a acertar. El máximo realizado observado fue 6.932 bps.
+    slippage_cap_bps: float = Field(default=1500.0)
     fee_bps: float = Field(default=0.0)  # Polymarket cobra 0% en la mayoría de mercados hoy
 
     # Bus de intents (Fase 3). Solo se usan cuando `mode == "shadow"`.

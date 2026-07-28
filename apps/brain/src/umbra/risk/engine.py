@@ -13,6 +13,7 @@ Orden de evaluación (corta circuita en el primer fallo):
  9. max_exposure_per_market_usd (incluye posición abierta)
 10. portfolio gross exposure cap (max_gross_exposure_pct × bankroll)
 11. cash reserve cap (cash post-trade >= min_cash_reserve_pct × bankroll)
+12. suelo de nocional (min_notional_usd) — después de los recortes 8-11
 
 Si pasa → devuelve RiskDecision(accepted=True, ...). Cualquier `reason` distinto
 de "ok" se persiste en Signal.reason para auditoría.
@@ -337,6 +338,24 @@ async def check(
         ratio = permitted / notional
         notional = permitted
         shares = shares * ratio
+
+    # 12. Suelo de nocional. VA LA ÚLTIMA, y eso es lo único que la hace útil.
+    #
+    # Las compuertas 8-11 no rechazan: recortan, y multiplicativamente. Un nocional
+    # de $6 que pasa por tres recortes sale convertido en $2. Comprobar el suelo
+    # antes de ellas dejaría pasar exactamente las órdenes que este gate existe para
+    # matar, porque en ese punto todavía no son pequeñas.
+    #
+    # Una orden por debajo del suelo no se recorta: se rechaza. Media orden pequeña
+    # sigue siendo una orden pequeña, y el problema no era el tamaño sino que el
+    # spread se come el edge antes de que el edge exista.
+    if notional < settings.min_notional_usd:
+        return RiskDecision(
+            False,
+            f"notional_below_floor {notional:.2f} < {settings.min_notional_usd:.2f}",
+            0.0,
+            0.0,
+        )
 
     return RiskDecision(True, "ok", notional, shares, kappa_factor=kappa_factor)
 
