@@ -137,6 +137,21 @@ class Settings(BaseSettings):
     min_cash_reserve_pct: float = Field(default=0.10)  # nunca <10% en cash
     dd_throttle_pct: float = Field(default=0.10)  # DD > 10%: kappa /= 2
     dd_halt_pct: float = Field(default=0.15)  # DD > 15%: halt + flatten
+
+    # Ventana sobre la que se busca el pico de equity para calcular el drawdown.
+    #
+    # Antes el pico se medía «desde la última vez que la cartera estuvo plana», con
+    # la intención —correcta— de que un pico antiguo no dejara el bot en halt para
+    # siempre. Pero el criterio lo marcaba la estrategia, no el reloj: la noche del
+    # 28 de julio de 2026 hubo 102 momentos de cartera plana en 24 horas, cada uno
+    # reseteando el pico. La equity cayó un 15,82% y la compuerta nunca llegó a ver
+    # más de un 14,62%, con el umbral de halt en el 15%. Se libró por 38 centésimas
+    # mientras el freno estaba, en la práctica, ciego.
+    #
+    # Con una ventana temporal la intención original se conserva —el pico caduca—
+    # pero quien la hace caducar es el tiempo, no el churn. A 48h, aquella noche
+    # habría disparado el halt unas cuatro horas antes.
+    dd_peak_window_hours: float = Field(default=48.0, gt=0.0)
     cooldown_minutes: float = Field(default=30.0)  # tras un exit, cooldown por mercado
 
     # Entry gates de liquidez/spread

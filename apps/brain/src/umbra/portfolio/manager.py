@@ -191,7 +191,12 @@ async def _realized_total(session: AsyncSession) -> float:
 
 
 async def _latest_flat_snapshot_ts(session: AsyncSession) -> datetime | None:
-    """Ultimo punto sin posiciones; separa ciclos de riesgo activo."""
+    """Ultimo punto sin posiciones; separa ciclos de riesgo activo.
+
+    Ya no decide el drawdown — ver `portfolio_snapshot`. Se conserva porque sigue
+    siendo la forma honesta de preguntar «¿cuándo empezó el ciclo de riesgo
+    actual?», y hay analítica que lo usa.
+    """
     return (
         await session.execute(
             select(EquitySnapshot.ts)
@@ -222,14 +227,21 @@ async def portfolio_snapshot(session: AsyncSession) -> PortfolioSnapshot:
     cash = settings.bankroll_usd + realized_total - gross_exposure
     equity = cash + positions_value
 
-    if views:
-        cycle_start_ts = await _latest_flat_snapshot_ts(session)
-        peak_hist = await _peak_equity(session, since_ts=cycle_start_ts)
-        peak = max(peak_hist, equity)
-    else:
-        # Sin posiciones abiertas empieza un nuevo ciclo de riesgo. Un pico
-        # historico anterior no debe dejar el bot en DD halt para siempre.
-        peak = equity
+    # El pico se busca en una VENTANA TEMPORAL, no «desde la última vez que la
+    # cartera estuvo plana».
+    #
+    # La versión anterior reseteaba el pico a la equity actual en cuanto no había
+    # posiciones abiertas, y con ello el drawdown a cero. La intención era buena —un
+    # pico antiguo no debe dejar el bot en halt para siempre— pero el criterio lo
+    # marcaba la estrategia: con 102 momentos de cartera plana en 24 horas, el freno
+    # perdía la memoria 102 veces. La noche del 28/07/2026 la equity cayó un 15,82%
+    # y la compuerta nunca vio más de un 14,62%, con el halt puesto en el 15%.
+    #
+    # Ahora el pico caduca por reloj. Se mira SIEMPRE, haya posiciones o no: estar
+    # plano un instante no borra lo que se perdió para llegar hasta ahí.
+    window_start = datetime.now(UTC) - timedelta(hours=settings.dd_peak_window_hours)
+    peak_hist = await _peak_equity(session, since_ts=window_start)
+    peak = max(peak_hist, equity)
     drawdown_pct = (equity - peak) / peak if peak > 0 else 0.0
 
     return PortfolioSnapshot(
