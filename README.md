@@ -135,13 +135,47 @@ está mintiendo y todo lo demás da igual.
 | `apps/exec/src/clients/ctf-client.ts` | Split / merge / redeem on-chain |
 | `packages/contracts/` | El contrato del bus. Fuente única de verdad |
 
+## ⚠️ `scripts/reset_paper_state.py` borra más de lo que dice
+
+Hace `TRUNCATE fills, portfolio_state, equity_snapshots, signals RESTART IDENTITY
+**CASCADE**`, y ese `CASCADE` se lleva por delante `intents`, `signal_audit` y
+`trade_outcomes` — es decir, **todas las mediciones de la Fase 3**. Su docstring
+enumera lo que conserva, pero se escribió antes de que esas tres tablas existieran.
+
+Para limpiar solo la contabilidad de papel conservando las mediciones:
+
+```sql
+TRUNCATE portfolio_state, equity_snapshots;   -- sin CASCADE, a propósito
+```
+
+Sin `CASCADE`, si algo dependiera de esas tablas Postgres falla en vez de borrarlo en
+silencio. Haz backup antes igualmente:
+
+```bash
+pg_dump -h localhost -p 5432 -U umbra -d umbra \
+  -t portfolio_state -t equity_snapshots -Fc -f backup.dump
+```
+
 ## Antes de tocar dinero real
 
-Está escrito en `apps/brain/ROADMAP.md:306` y sigue en pie: hay 10 criterios no
-negociables, y hace falta un `FINDINGS_W1.md` con veredicto go que **todavía no
-existe**. El edge de overreaction nunca ha sido validado, y su `P_fair` es hoy un
-passthrough de la EMA sin calibrar — el Kelly está dimensionando sobre probabilidades
-que nadie ha verificado.
+Los 10 criterios no negociables están en
+[`apps/brain/ROADMAP.md`](./apps/brain/ROADMAP.md) §Criterios, y siguen en pie. Sigue
+sin existir un `FINDINGS_W1.md` con veredicto go.
+
+**El criterio 2 se midió por primera vez el 28/07/2026 y NO se cumple.** Sobre 1.799
+eventos con outcome conocido, el Brier del modelo fue 0.0723 y el del precio de
+mercado 0.0722; la diferencia emparejada da un IC del 95% de **[−0.00564, +0.00056]**,
+que cruza el cero. No hay evidencia de que el modelo prediga mejor que el mercado.
+
+Era lo esperable: `P_fair` es un passthrough de la EMA del mid —una versión suavizada
+del precio— y no puede batir a aquello de lo que se deriva. El Kelly lleva desde
+siempre dimensionando sobre eso. Cerrar GAP-01 es la prioridad, y ahora es posible:
+hay 98 outcomes resueltos y una métrica que dirá si la calibración funciona.
+
+> El criterio 2 decía «Brier < 0.20» hasta ese día. Se cambió a **batir al mercado con
+> significancia** porque el umbral absoluto lo cumplían tanto el modelo como el
+> mercado: no premiaba acertar, premiaba operar donde es fácil acertar. El detalle
+> está en [`docs/AUDITORIA_ARQUITECTURA_2026-07.md`](./docs/AUDITORIA_ARQUITECTURA_2026-07.md).
 
 Cuando llegue el momento, el orden es **arbitraje primero** (es estructural: gana
 porque YES+NO converge a $1, no predice nada), DipArb después, y overreaction el

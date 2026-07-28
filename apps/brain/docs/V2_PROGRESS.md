@@ -1,8 +1,8 @@
 # v2 — Progreso (Bloque A: Validación)
 
 > El plan (RESTRUCTURE_PLAN §1) impone disciplina: **no se implementan los edges
-> 2-11 hasta que OverreactionV1 esté validado** (Brier < 0.20 y EV+ en
-> walk-forward). Por eso la v2 arranca por el Bloque A — la maquinaria de
+> 2-11 hasta que OverreactionV1 esté validado** (**batir al mercado en Brier con significancia** (ver `ROADMAP.md` §Criterios; el viejo «Brier < 0.20» lo cumplía un sistema sin edge)
+> y EV+ en walk-forward). Por eso la v2 arranca por el Bloque A — la maquinaria de
 > validación — y no por más edges.
 
 ## Qué se construyó (todo lógica pura, testeable sin infra)

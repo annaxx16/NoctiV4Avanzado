@@ -49,7 +49,7 @@ Lo que **falta** para operación real y EV positivo robusto:
 
 La reestructuración se organiza en **cuatro bloques** independientes que pueden desarrollarse en paralelo a partir del Mes 2:
 
-**Bloque A — Validación de OverreactionV1** (Semanas 1-2): acumular 5000+ snapshots, implementar resolución de outcomes, Brier score real, walk-forward con ventanas deslizantes, análisis de sensibilidad de σ_threshold y ema_alpha. Criterio de salida: Brier < 0.20, EV+ después de slippage, degradación walk-forward < 30%.
+**Bloque A — Validación de OverreactionV1** (Semanas 1-2): acumular 5000+ snapshots, implementar resolución de outcomes, Brier score real, walk-forward con ventanas deslizantes, análisis de sensibilidad de σ_threshold y ema_alpha. Criterio de salida: **batir al mercado en Brier con significancia** (ver `ROADMAP.md` §Criterios NO negociables), EV+ después del slippage medido, degradación walk-forward < 30%.
 
 **Bloque B — Data Engine expandido** (Semanas 2-4): integrar CLOB API para orderbook profundo, WebSocket para latencia real, pipeline ETL de feeds externos (RSS policy, Polymarket Data API para trades históricos). Esto habilita los edges 2, 4, 5, 11.
 
@@ -59,7 +59,7 @@ La reestructuración se organiza en **cuatro bloques** independientes que pueden
 
 ### Restricciones no negociables
 
-1. Ningún edge pasa a producción sin Brier < 0.25 y EV+ en walk-forward.
+1. Ningún edge pasa a producción sin batir al mercado en Brier con significancia y EV+ en walk-forward. *(Decía «Brier < 0.25»; un umbral absoluto no distingue un edge de copiar el precio.)*
 2. Slippage modelado con CLOB real antes de evaluar rentabilidad.
 3. Paper trading mínimo 60 días antes de capital real.
 4. Máximo 2-3 hiperparámetros por edge en optimización.
@@ -88,9 +88,12 @@ GAP-01  Probability engine es passthrough (fair_price = EMA).
         Impacto: sin calibración, Kelly usa probabilidades no verificadas.
         Solución: regresión logística sobre features + outcomes resueltos.
 
-GAP-02  Sin resolución de outcomes.
+GAP-02  Sin resolución de outcomes.   [RESUELTO 28/07/2026]
         Impacto: PnL realizado = 0, Brier score inválido, validación imposible.
-        Solución: job async cada 1h que consulta Gamma para mercados con endDate < now.
+        El job existía y corría cada hora, pero devolvía CERO desde el principio:
+        Gamma filtra a mercados no-cerrados por defecto y nadie le pedía
+        `closed=true`, así que preguntaba por vencidos y no recibía casi nada.
+        Fallaba en silencio. Al arreglarlo: 0 -> 98 filas en la primera pasada.
 
 GAP-03  Sin CLOB API.
         Impacto: slippage es heurística lineal; orderbook profundo no disponible.
@@ -832,9 +835,19 @@ def test_market_shock_doesnt_blow_up():
 
 ### 14.2 Criterios NO negociables para live trading
 
+> ⚠️ **Los criterios 2 y 3 fueron corregidos el 28/07/2026.** La lista viva y
+> autoritativa está en [`ROADMAP.md`](../ROADMAP.md) §Criterios NO negociables. Se
+> conservan aquí tachados porque el razonamiento original tiene valor histórico.
+
 1. ≥ 90 días de paper trading continuo con outcomes resueltos.
-2. Brier score sostenido < 0.20 en los últimos 30 días.
-3. Sharpe paper > 1.0 después de slippage CLOB modelado.
+2. ~~Brier score sostenido < 0.20 en los últimos 30 días.~~ → **batir al precio de
+   mercado en Brier con significancia estadística** (IC 95% de la diferencia
+   emparejada, entero bajo cero, sobre ≥ 200 predicciones). El umbral absoluto lo
+   cumplía un sistema sin edge: medido sobre 1.799 eventos reales, modelo 0.0723 y
+   mercado 0.0722.
+3. ~~Sharpe paper > 1.0 después de slippage CLOB modelado.~~ → **Sharpe por trade
+   ≥ 0.10**. En contratos binarios el retorno por trade es bimodal y su std ronda
+   1.0: un gate en 1.0 rechaza hasta un bot perfecto. Ver `AUDIT_2026-07.md` §4.
 4. Walk-forward: degradación < 20% entre el mejor train y el peor test.
 5. Max drawdown paper < 15%.
 6. Circuit breakers activos y testeados en stress tests.
@@ -886,7 +899,7 @@ estrictamente la filosofía del sistema:
 
 1. No agregar complejidad sin validación estadística previa.
 2. No implementar edges 2-11 hasta que edge 1 (Overreaction) esté validado
-   con Brier < 0.20 y EV+ en walk-forward (ver docs/RESTRUCTURE_PLAN.md §8).
+   batiendo al mercado en Brier con significancia y con EV+ en walk-forward (ver `ROADMAP.md` §Criterios).
 3. Tests anti-lookahead son obligatorios para cualquier feature nuevo.
 4. El risk engine (src/umbra/risk/engine.py) no se modifica en lógica;
    solo se extienden sus compuertas añadiendo nuevas al final.

@@ -289,18 +289,47 @@ Cada decisión queda registrada en `Signal.reason`.
 
 ### 6.9. Paper execution (`src/umbra/execution/paper.py`)
 
-Modelo de slippage simple:
+Modelo de slippage. **El coste de cruzar es, ante todo, el medio spread:**
 
 ```
-slippage_bps = base_bps + size_factor_bps * (notional / liquidity)
-              capeado a 500 bps (5%)
+slippage_bps = clamp(
+    spread_factor * medio_spread_bps  +  size_factor_bps * (notional / liquidity),
+    suelo = base_bps,
+    tope  = cap_bps,
+)
+
+medio_spread_bps = (spread / 2) / precio_del_token_comprado * 10_000
 ```
 
-Default: base = 20 bps, size_factor = 200 bps. Si compras $10 en un mercado de $10,000 de liquidez (ratio 0.001), slippage ≈ 20.2 bps.
+Defaults: `spread_factor = 1.0`, `base_bps = 20` (suelo, no sumando), `cap = 1500`.
 
-`fill_price = teórico * (1 + slippage_bps/10_000)`. Para `BUY_YES`, teórico = `mid_yes`; para `BUY_NO`, teórico = `1 - mid_yes`.
+El denominador es el precio del **token que se compra**, no el mid del YES. Los
+libros de YES y NO son espejo: el spread absoluto es el mismo, pero en bps no. Un
+céntimo de spread comprando NO a $0,05 cuesta 1.000 bps; el mismo libro, comprando
+YES a $0,95, cuesta 53.
 
-Cada fill genera 1 fila en `fills_paper` y upsertea (o crea) 1 fila en `portfolio_state` con shares acumuladas y avg_entry_price ponderado.
+> **El modelo anterior era `base + size_factor * ratio`, sin término de spread, y
+> estaba mal.** Con nocionales de ~$11 contra liquidez de ~$5.000 el término de
+> tamaño aporta 0,4 bps, así que en producción la función devolvía la constante 20,0
+> — en los 345 intents de la ventana 1, sin una sola excepción — mientras el libro
+> real cobraba 191. El coeficiente del término nuevo no se eligió: se ajustó sobre
+> esos 315 fills por error absoluto mediano, y salió `spread_factor = 1.0`,
+> `size_factor ≈ 0`. Validado fuera de muestra sobre 298 mediciones: error mediano
+> de −43,0 bps a +0,1. Ver `docs/AUDITORIA_ARQUITECTURA_2026-07.md` §1.
+
+El término de impacto se conserva **sin validar**: a los tamaños actuales (ratios de
+1e-5 a 5e-4) no hay variación con la que ajustarlo. Existe como protección si algún
+día crecen.
+
+`fill_price = teórico * (1 + slippage_bps/10_000)`. Para `BUY_YES`, teórico = `mid_yes`;
+para `BUY_NO`, teórico = `1 - mid_yes`.
+
+Cada fill genera 1 fila en `fills` (antes `fills_paper`) y upsertea (o crea) 1 fila en
+`portfolio_state` con shares acumuladas y avg_entry_price ponderado.
+
+**El coste de SALIDA no se ha medido nunca.** `stage_intent` solo se llama en el
+camino de apertura, así que la Fase 3 midió entradas. El ida y vuelta es mitad
+medido, mitad supuesto.
 
 ### 6.10. Portfolio manager (`src/umbra/portfolio/manager.py`)
 

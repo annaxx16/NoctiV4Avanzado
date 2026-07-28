@@ -128,7 +128,9 @@ Modificar `universe/scanner.py`:
 ### Día 14 — Checkpoint estratégico
 
 - Decisión basada en evidencia de las primeras 2 semanas:
-  - **Edge validado** (Brier < 0.20, EV+ > 0, robusto a parámetros y slippage): seguir a Semana 3 con plan Mean Reversion.
+  - **Edge validado** — bate al mercado en Brier con significancia (§Criterios NO
+    negociables), EV+ > 0, robusto a parámetros y al slippage medido: seguir a
+    Semana 3 con plan Mean Reversion.
   - **Edge incierto**: extender Semana 1-2 otras 2 semanas con más datos antes de agregar Mean Reversion.
   - **Edge no validado**: pivotar a Edge 3 (Market Structure) que es más matemático y menos dependiente de narrativa.
 

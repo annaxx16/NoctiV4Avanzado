@@ -1,4 +1,20 @@
-# Auditoría de arquitectura — monorepo Nocti, 27 julio 2026
+# Auditoría de arquitectura — monorepo Nocti, 27-28 julio 2026
+
+> **Estado a 28/07/2026, 23:00.** Este documento empezó como auditoría estática y
+> acabó siendo el registro de dos días en los que el sistema se midió a sí mismo por
+> primera vez. Lo esencial, para quien lo lea con prisa:
+>
+> | | |
+> |---|---|
+> | Modelo de slippage | **Corregido y validado.** Divergencia mediana +54 → −0,0 bps sobre 298 medidas fuera de muestra |
+> | Freno de drawdown | **Estaba ciego.** Perdió $914 de papel en una noche. Corregido |
+> | Universo | **42% eran mercados irresolubles.** Filtrado a Yes/No |
+> | Resolución de outcomes | **Llevaba semanas devolviendo cero.** Corregido: 0 → 98 filas |
+> | Brier del modelo | **0.0723 vs 0.0722 del mercado.** Sin evidencia de edge |
+> | Gate §14 | **Reescrito**: batir al mercado con significancia, no un umbral absoluto |
+> | Dinero real en juego | **Ninguno, en ningún momento.** Cero fills en modo `live` |
+>
+> Commits: `cf1005e` · `ff37dc2` · `25b5ffd` · `3bb5c55` · `ef38a46`
 
 Auditoría del monorepo completo (`apps/brain`, `apps/exec`, `packages/contracts`)
 con vistas a convertirlo en un framework cuantitativo multi-exchange. No se ha
@@ -292,6 +308,104 @@ suelo dejaba pasar 5,7 intents/día y dos días no dan muestra:
 
 ---
 
+## 1ter. La noche del 28 de julio
+
+Lo que la ventana 2 encontró, en orden de aparición.
+
+### El freno de drawdown estaba ciego
+
+La equity de papel cayó **15,82%** (de $4.853,46 a $4.085,63) con `dd_halt_pct` en
+0,15. El halt no saltó. El peor drawdown que la compuerta llegó a *ver* fue
+**−14,62%**: se libró por 38 centésimas.
+
+`portfolio_snapshot` medía el pico «desde la última vez que la cartera estuvo plana»,
+y sin posiciones abiertas hacía `peak = equity` — drawdown 0,00. La intención era
+legítima: que un pico antiguo no dejara el bot en halt para siempre. El fallo es que
+**el criterio lo marcaba la estrategia, no el reloj**. Esta estrategia se queda plana
+constantemente —102 veces en 24 horas— y cada una borraba la memoria del pico.
+
+Corregido en `25b5ffd`: el pico se busca en una ventana de reloj
+(`dd_peak_window_hours`, 48h) y se mira siempre, haya posiciones o no.
+
+> **La lección general, que vale más que el bug**: cualquier mecanismo de riesgo cuyo
+> periodo lo defina la propia actividad del bot puede ser anulado por esa actividad. Al
+> revisar un gate, preguntar siempre quién decide su ventana. Si la respuesta es «la
+> estrategia», es un bug esperando.
+
+### El 42% del universo eran mercados irresolubles
+
+21 de 50 mercados activos tenían outcomes con nombre propio —`["Cleveland Guardians",
+"Cincinnati Reds"]`, `["Imperial", "BESTIA"]`, `["Over", "Under"]`— y el **31% de las
+señales aceptadas** (342 de 1.098) vivía ahí.
+
+`resolve_yes_outcome` solo lee mercados con etiqueta «Yes», así que esos nunca llegan a
+`outcomes`. Sin fila en `outcomes` el trigger T1 del exit engine no salta jamás: **esas
+posiciones no pueden cerrarse por haber acertado, solo por stop-loss, TTL o fricción.**
+Y `stage_intent` los descartaba con `token_no_resoluble`, así que tampoco se medían.
+
+Además la premisa del edge no traslada. En un mercado Yes/No sobre un evento, un salto
+de precio puede ser pánico; en «Guardians vs Reds» suele ser información —cambia el
+pitcher, hay una lesión— y no hay media a la que revertir.
+
+Corregido en `3bb5c55`. El universo quedó **100% Yes/No sin perder tamaño**: el scanner
+simplemente paginó más hondo.
+
+### El resolver de outcomes llevaba semanas devolviendo cero
+
+`outcomes` tenía **cero filas** con 187 mercados Yes/No vencidos esperando. No estaba
+hambriento: estaba roto. Medido contra la API real:
+
+```
+sin el parámetro  ->  1 de 20 devueltos,  0 cerrados
+closed=true       -> 19 de 20 devueltos, 19 cerrados
+```
+
+**`/markets` de Gamma filtra a mercados no cerrados por defecto**, aunque preguntes por
+`condition_id` exacto. El resolver pedía los vencidos sin decir que los quería cerrados.
+Fallaba en silencio: sin excepción, sin log de error, solo un diccionario casi vacío.
+
+Segundo fallo del mismo barrido: `_markets_pending_resolution` no filtraba por Yes/No,
+así que los 144 irresolubles ocupaban el lote hasta el `limit` una y otra vez y nunca
+salían de `notin_(resolved)`. **Un barrido con `limit` y sin filtrar por "lo que
+realmente puedo procesar" se atasca en lo que no puede procesar.**
+
+Efecto inmediato: **0 → 98 filas**, 37 mercados calibrables, 136 señales puntuables.
+
+### Y con eso, el primer Brier del proyecto
+
+| muestra | n | Brier modelo | Brier mercado |
+|---|---|---|---|
+| todas las señales | 1.799 | 0.0723 | 0.0722 |
+| solo aceptadas | 136 | 0.1104 | 0.1126 |
+
+```
+diferencia media (modelo - mercado):  -0.00222
+IC 95% bootstrap emparejado:          [-0.00564, +0.00056]   ← cruza el cero
+```
+
+**No hay evidencia de que el modelo prediga mejor que el propio precio de mercado.**
+
+Era lo esperable —`compute_p_fair` es un passthrough de la EMA del mid, o sea una
+versión suavizada del precio, y no puede batir a aquello de lo que se deriva— pero
+ahora es un número medido y no un argumento.
+
+**Y no leer el 0,07 como aprobado.** Está muy por debajo del 0,20 que pedía el criterio
+§14, pero ese umbral es engañoso: si la mayoría de mercados resuelven cerca de su
+precio, copiar el precio ya saca un Brier bajo. El umbral absoluto no premiaba acertar,
+premiaba operar donde es fácil acertar. Por eso el gate se reescribió (`ef38a46`) para
+exigir **batir al mercado con significancia**, con `beats_baseline` cierto solo si el
+IC del 95% queda entero bajo cero, semilla fija para que el veredicto sea reproducible,
+y fail-closed si no hay referencia.
+
+### Lo que esto cambia en el plan
+
+GAP-01 —calibrar `p_fair`— pasa de *inatacable* a *la prioridad*. Ayer no se podía
+calibrar porque no había un solo outcome; hoy hay 98 y una métrica que dirá si la
+calibración funciona. Mientras `p_fair` sea la EMA, Kelly dimensiona sobre el precio de
+mercado disfrazado de probabilidad propia.
+
+---
+
 ## 2. Mapa del proyecto
 
 ```
@@ -427,12 +541,19 @@ de tocar dinero, porque es la librería que firma.
 
 ## 5. Deuda técnica
 
-| # | Sev | Área | Hallazgo |
-|---|-----|------|----------|
-| 1 | 🔴 | `execution/paper.py:99` | Modelo de slippage sin término de spread; en producción es una constante de 20 bps. Divergencia medida +171 bps |
-| 2 | 🔴 | `risk/engine.py:285-339` | Cuatro compuertas recortan nocional multiplicativamente sin suelo → órdenes de $2 con EV negativo estructural. 52% del flujo |
-| 3 | 🔴 | `engine/probability.py:22` | `compute_p_fair` es passthrough de la EMA. Kelly dimensiona sobre probabilidades no calibradas. Documentado como GAP-01 desde hace meses |
-| 4 | 🟠 | raíz | Sin CI. 290 tests que nadie ejecuta automáticamente; ruff y mypy instalados y no cableados |
+| # | Sev | Área | Hallazgo | Estado |
+|---|-----|------|----------|--------|
+| 1 | 🔴 | `execution/paper.py:99` | Modelo de slippage sin término de spread; en producción una constante de 20 bps. Divergencia +171 bps | ✅ `cf1005e` |
+| 2 | 🔴 | `risk/engine.py:285-339` | Cuatro compuertas recortan nocional sin suelo → órdenes de $2 con EV negativo. 52% del flujo | ✅ `cf1005e` |
+| 1b | 🔴 | `portfolio/manager.py:229` | El pico de drawdown se reseteaba en cada momento plano → freno ciego. −15,82% real, −14,62% visto | ✅ `25b5ffd` |
+| 1c | 🔴 | `universe/scanner.py` | 42% del universo eran mercados con outcome de nombre propio, irresolubles | ✅ `3bb5c55` |
+| 1d | 🔴 | `polymarket/client.py` | Gamma filtra a no-cerrados por defecto → `outcomes` vacía durante semanas | ✅ `ef38a46`* |
+| 1e | 🟠 | `backtest/metrics.py` | El gate §14 usaba un umbral absoluto que un sistema sin edge cumple | ✅ `ef38a46` |
+| 3 | 🔴 | `engine/probability.py:22` | `compute_p_fair` es passthrough de la EMA. Kelly dimensiona sobre probabilidades no calibradas (GAP-01) | **ABIERTO — prioridad 1** |
+| 3b | 🔴 | `bus/intents.py` | El coste de SALIDA nunca se ha medido: `stage_intent` solo en la apertura | **ABIERTO** |
+| 3c | 🟠 | `engine/exit_engine.py` | Sin suelo de nocional en la salida. 3.173 cierres de <$1 moviendo el 4,8% del nocional | **ABIERTO** |
+| 3d | 🟠 | `scripts/reset_paper_state.py` | `TRUNCATE ... CASCADE` destruye `intents`, `signal_audit` y `trade_outcomes`. Su docstring no lo dice | **ABIERTO — peligroso** |
+| 4 | 🟠 | raíz | Sin CI. 291 tests que nadie ejecuta automáticamente; ruff y mypy instalados y no cableados | **ABIERTO** |
 | 5 | 🟠 | `apps/exec/package.json` | Identidad de SDK público (`@catalyst-team/poly-sdk`, `private: false`, `publishConfig.access: public`, `prepublishOnly`) en el repo que contiene la wallet. Un `npm publish` accidental es posible |
 | 6 | 🟠 | `apps/exec/src/services/` | ~7.500 LOC latentes (dip-arb 2.288, smart-money 2.277, arbitrage 1.857) heredadas de Bot1, fuera del flujo del bus, con sus tests de integración golpeando APIs reales |
 | 7 | 🟠 | `orchestrator.py:75-78` | Los edges se evalúan en cascada `if None`: momentum solo se ve si overreaction calla. No es un ensemble, es una prioridad implícita — y produce el 78% del flujo |
@@ -533,17 +654,24 @@ Ordenados por (beneficio / esfuerzo), todos por debajo de medio día:
 
 ## 9. Roadmap priorizado
 
-**Fase A — Cerrar el bucle de medición (1-2 semanas).** Es la única fase que
-importa hoy, porque hasta que cierre, ningún número del sistema es interpretable.
-Quick wins 1 y 2; recalibrar el modelo de slippage contra los 315 fills reales;
-volver a lanzar shadow 7 días con el suelo de nocional puesto y confirmar que la
-divergencia converge; **entonces** emitir `FINDINGS_W1.md`. Criterio de salida:
-divergencia mediana < 25 bps y p90 < 100 bps.
+**~~Fase A — Cerrar el bucle de medición.~~ ✅ HECHA (28/07).** La divergencia
+mediana quedó en −0,0 bps sobre 298 medidas fuera de muestra, muy por debajo del
+criterio de salida que se había fijado (< 25 bps). El suelo de nocional está puesto.
 
-**Fase B — Calibración de probabilidad (2-3 semanas).** Cerrar GAP-01. Sustituir
-el passthrough por calibración isotónica o Platt sobre `outcomes` resueltos.
-Hasta aquí, Kelly no tiene fundamento. Criterio de salida: Brier out-of-sample
-< 0,20 sobre ≥ 200 outcomes resueltos.
+**Fase B — Calibración de probabilidad (2-3 semanas). ← AQUÍ.** Cerrar GAP-01.
+Sustituir el passthrough por calibración isotónica o Platt sobre los `outcomes`
+resueltos. Hasta aquí, Kelly no tiene fundamento.
+
+> **Criterio de salida corregido.** Decía «Brier out-of-sample < 0,20», y el propio
+> 28 de julio demostró que ese umbral lo cumple un sistema sin edge. El criterio es
+> ahora **batir al mercado con significancia**: IC 95% de la diferencia emparejada
+> entero bajo cero, sobre ≥ 200 predicciones out-of-sample. Es exactamente lo que
+> evalúa `MetricsReport.passes_acceptance`.
+
+**Fase B′ — Medir el coste de salida (paralelizable con B).** `stage_intent` solo se
+llama al abrir, así que el ida y vuelta es mitad medido y mitad supuesto. Sumar el
+camino de cierre al bus, y un suelo de nocional en la salida — 3.173 de los cierres
+movían menos de $1 cada uno.
 
 **Fase C — Higiene estructural (1 semana, paralelizable).** Quick wins 3-6.
 Decidir el destino de las 7.500 LOC latentes de `exec`: extraer a paquete propio

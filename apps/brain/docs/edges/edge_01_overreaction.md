@@ -112,7 +112,7 @@ def detect(snapshots: list[SnapshotInput], as_of: datetime) -> EdgeOutput | None
 
 | Métrica | Umbral mínimo |
 |---|---|
-| Brier score | < 0.25 |
+| ~~Brier score~~ | ~~< 0.25~~ → **batir al mercado con significancia** (ver [`README.md`](./README.md)) |
 | EV por señal (después de slippage) | > 0 |
 | Profit Factor | > 1.2 |
 | Sharpe (paper 30d) | > 0.5 |
