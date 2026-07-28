@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     min_volume_24h_usd: float = Field(default=1000.0)
     universe_top_n: int = Field(default=20)
     universe_scan_interval_sec: int = Field(default=300)
+    # Solo mercados Yes/No con los dos tokens identificables. Ver `is_binary_yes_no`
+    # y el comentario de `_is_eligible` en universe/scanner.py: los mercados con
+    # outcomes con nombre propio no se pueden resolver, y sin resolución no hay
+    # outcome, ni Brier, ni calibración, ni salida por acierto.
+    #
+    # A `False` se recupera el universo entero, con esas consecuencias.
+    universe_require_binary_yes_no: bool = Field(default=True)
 
     # Poller
     poll_interval_sec: int = Field(default=30)
