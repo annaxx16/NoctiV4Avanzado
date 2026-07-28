@@ -31,9 +31,18 @@ placeholder. `brain` está en `MODE=sim`.
 | Fase | Qué hace | Estado |
 |---|---|---|
 | 0 | Monorepo, contrato del bus, compose | Hecha |
-| 1 | `exec` publica el book por WebSocket; `brain` gana profundidad de libro | Código listo, sin verificar contra infra |
-| 2 | Contabilidad unificada; el halt sobrevive a los restarts | Pendiente |
-| 3 | Shadow execution: cuánto miente el backtest | Pendiente |
+| 1 | `exec` publica el book por WebSocket; `brain` gana profundidad de libro | Hecha y verificada (`from_ws=38/50`, books de 20 niveles) |
+| 2 | Contabilidad unificada; el halt sobrevive a los restarts | Hecha |
+| 3 | Shadow execution: cuánto miente el backtest | **Respondida.** Ver abajo |
+
+**Miente por un factor 9,5.** La primera ventana de shadow (12→27 julio 2026, 345
+intents cotizados contra el libro real) midió 191 bps de slippage donde el modelo
+predecía 20 — y ese 20 no era una media, era el valor exacto de los 345: al modelo le
+faltaba el término de spread, que es el coste dominante. El 52% de las órdenes eran de
+menos de $5, pagaban 281 bps y no podían cubrir su propio peaje.
+
+Corregido en `cf1005e`. La auditoría completa, con lo que sigue abierto, está en
+[`docs/AUDITORIA_ARQUITECTURA_2026-07.md`](./docs/AUDITORIA_ARQUITECTURA_2026-07.md).
 
 Cada fase se enciende con un flag y se apaga con el mismo flag. Con
 `NOCTI_BOOK_PUBLISHER_ENABLED=false`, `exec` se levanta pero no publica, y `brain` se
@@ -52,9 +61,22 @@ Requisitos: Docker, o bien Python 3.11 + Node 20 para correr nativo.
 
 ```bash
 cp .env.example .env      # y rellenar
-docker compose up -d      # postgres, redis, brain, exec
-docker compose --profile ui up -d   # + dashboards (Streamlit :8501, React :3001)
+docker compose --profile app up -d --build
 ```
+
+Un solo perfil levanta todo: `redis`, `brain`, `exec` y el dashboard de Streamlit.
+**No existe un perfil `ui`** — lo hubo en el plan y nunca llegó al fichero; el perfil
+`db` es solo el Postgres de tests en el 5434, y no hace falta para operar (el de
+producción vive fuera de compose, en el 5432 de la máquina).
+
+El `--build` no es opcional después de tocar código: las imágenes llevan el fuente
+dentro, y sin reconstruir levantarías la versión anterior.
+
+| Qué | Dónde |
+|---|---|
+| API de `brain` (FastAPI) | http://localhost:8000 — `/docs` para el índice |
+| Dashboard de `brain` (Streamlit) | http://localhost:8501 |
+| Dashboard de `exec` (React) | http://localhost:3001 |
 
 Todo queda bindeado a `127.0.0.1`. Para verlo en remoto, túnel SSH:
 `ssh -L 8000:localhost:8000 usuario@host`.
