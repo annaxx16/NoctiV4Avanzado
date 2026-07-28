@@ -40,3 +40,38 @@ def test_no_concluyente_si_precios_fraccionarios():
 def test_mercado_no_binario_se_ignora():
     m = _market(True, ["Trump", "Biden", "Other"], ["1", "0", "0"])
     assert resolve_yes_outcome(m) is None
+
+
+# ---------------------------------------------------------------------------
+# El bug que dejó `outcomes` vacía durante semanas
+# ---------------------------------------------------------------------------
+
+
+async def test_el_cliente_pide_closed_explicitamente():
+    """`/markets` de Gamma filtra a NO cerrados por defecto, aun preguntando por
+    `condition_id` exacto. Medido contra la API real:
+
+        sin el parámetro  ->  1 de 20 devueltos
+        closed=true       -> 19 de 20 devueltos
+
+    Un mercado resuelto es siempre un mercado cerrado. Sin pedirlo, el resolver
+    preguntaba por vencidos y no recibía casi nada: `outcomes` llevaba semanas a
+    cero, y con ella el Brier, la calibración y GAP-01.
+    """
+    from umbra.polymarket.client import GammaClient
+
+    capturado: dict = {}
+
+    class _Fake(GammaClient):
+        async def _get(self, path, params=None):
+            capturado.update(params or {})
+            return []
+
+    async with _Fake(base_url="http://x") as c:
+        await c.get_markets_by_condition_ids(["0xa"], closed=True)
+    assert capturado.get("closed") == "true"
+
+    capturado.clear()
+    async with _Fake(base_url="http://x") as c:
+        await c.get_markets_by_condition_ids(["0xa"])
+    assert "closed" not in capturado, "sin pedirlo, el poller sigue viendo mercados vivos"

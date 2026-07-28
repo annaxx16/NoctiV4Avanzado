@@ -118,20 +118,38 @@ class GammaClient:
             offset += page_size
 
     async def get_markets_by_condition_ids(
-        self, condition_ids: list[str], chunk_size: int = 50
+        self,
+        condition_ids: list[str],
+        chunk_size: int = 50,
+        closed: bool | None = None,
     ) -> dict[str, GammaMarket]:
         """Descarga varios mercados en una sola llamada por chunk.
 
         Gamma acepta el parámetro `condition_ids` repetido (array). Devuelve un
         dict {condition_id: GammaMarket}. Los IDs que no vuelvan simplemente no
         aparecen en el dict — el caller puede hacer fallback individual.
+
+        `closed` NO es cosmético. **`/markets` filtra a mercados no cerrados por
+        defecto**, aunque preguntes por `condition_id` exacto:
+
+            sin el parámetro   ->  1 de 20 devueltos
+            closed=true        -> 19 de 20 devueltos
+
+        Un mercado resuelto es, por definición, un mercado cerrado. Sin pedirlo
+        explícitamente, `validation/outcome_resolver` preguntaba por mercados
+        vencidos y Gamma le devolvía casi nada: la tabla `outcomes` llevaba
+        semanas vacía y con ella el Brier, la calibración y GAP-01.
+
+        El default sigue siendo `None` —sin parámetro, comportamiento de antes—
+        porque el poller quiere justo lo contrario: mercados vivos.
         """
         out: dict[str, GammaMarket] = {}
         for i in range(0, len(condition_ids), chunk_size):
             chunk = condition_ids[i : i + chunk_size]
-            data = await self._get(
-                "/markets", params={"condition_ids": chunk, "limit": len(chunk)}
-            )
+            params: dict = {"condition_ids": chunk, "limit": len(chunk)}
+            if closed is not None:
+                params["closed"] = "true" if closed else "false"
+            data = await self._get("/markets", params=params)
             if not isinstance(data, list):
                 log.warning("gamma.unexpected_response", got_type=type(data).__name__)
                 continue

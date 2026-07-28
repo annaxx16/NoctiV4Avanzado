@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, literal, select
+from sqlalchemy.dialects.postgresql import ARRAY as PgARRAY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from umbra.config import settings
@@ -62,6 +63,18 @@ def resolve_yes_outcome(market: GammaMarket) -> bool | None:
 async def _markets_pending_resolution(
     session: AsyncSession, now: datetime, limit: int
 ) -> list[str]:
+    """Mercados vencidos, sin resolver, y que ESTE resolver puede resolver.
+
+    El filtro por `outcomes @> ['Yes']` no es una optimización. `resolve_yes_outcome`
+    solo sabe leer mercados con etiqueta «Yes»; los de outcome con nombre propio
+    —["Cleveland Guardians", "Cincinnati Reds"]— devuelven `None` siempre. Sin este
+    filtro ocupan el lote hasta el `limit` una y otra vez, y como nunca se resuelven
+    nunca salen de `notin_(resolved)`: el barrido se atasca en un conjunto fijo que
+    no puede avanzar. El 28/07/2026 había 144 así entre 331 vencidos.
+
+    Se ordena por `end_date` para que el barrido tenga un orden estable y ataque
+    primero lo más antiguo, que es lo que ya tiene outcome firme en Gamma.
+    """
     resolved = select(Outcome.market_id)
     stmt = (
         select(Market.condition_id)
@@ -69,7 +82,12 @@ async def _markets_pending_resolution(
             Market.end_date.is_not(None),
             Market.end_date < now,
             Market.condition_id.notin_(resolved),
+            # `@>` de Postgres. `Market.outcomes` usa el ARRAY genérico de
+            # SQLAlchemy, que no expone `.contains()`; el operador se escribe a
+            # mano y el literal se castea a varchar[] para que case con la columna.
+            Market.outcomes.op("@>")(cast(literal(["Yes"]), PgARRAY(String))),
         )
+        .order_by(Market.end_date)
         .limit(limit)
     )
     return list((await session.execute(stmt)).scalars().all())
@@ -88,7 +106,10 @@ async def resolve_pending_outcomes(
     resolved_count = 0
     async with GammaClient(base_url=settings.polymarket_gamma_url) as client:
         try:
-            markets = await client.get_markets_by_condition_ids(pending)
+            # `closed=True` explícito: Gamma filtra a no-cerrados por defecto, y un
+            # mercado resuelto es siempre un mercado cerrado. Ver la docstring del
+            # cliente — sin esto volvía 1 de cada 20 y esta función no resolvía nada.
+            markets = await client.get_markets_by_condition_ids(pending, closed=True)
         except Exception as exc:
             log.warning(
                 "outcomes.gamma_unavailable",
